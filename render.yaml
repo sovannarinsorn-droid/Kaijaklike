@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: kaijaklike-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 kaijaklike_bot.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: CAMRAPID_API_KEY
+        sync: false
+      - key: CONTROL_KEY
+        sync: false
+      - key: BOT_DISPLAY_NAME
+        value: Kaijaklike
