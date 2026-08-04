@@ -1264,7 +1264,33 @@ def admin_kb():
     kb.row("━━━ ⚙️ Settings ━━━")
     kb.row("✏️ កែ Support",      "👥 Sub Admins")
     kb.row("🔑 CamRapidPay Key", "📝 Welcome Msg")
+    kb.row("😊 កំណត់ Emoji")
     return kb
+
+def emoji_menu_kb():
+    """Inline menu for Premium Emoji settings (replaces /setemojis, /emojilist, /emojiid)."""
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("✏️ កំណត់ Emoji ថ្មី", callback_data="emojimenu:set", color="progress"))
+    kb.add(InlineKeyboardButton("📊 មើលស្ថានភាព",     callback_data="emojimenu:list", color="active"))
+    kb.add(InlineKeyboardButton("🆔 យក Emoji ID",       callback_data="emojimenu:id", color="active"))
+    return kb
+
+def missing_emoji_kb(per_row=6):
+    """Inline keyboard grid — one button per NOT-YET-SET emoji. Tapping one starts a
+    single-target flow: bot remembers which char was picked, admin sends/forwards the
+    premium version of it, bot matches it and saves the custom_emoji_id automatically —
+    no manual ID lookup needed."""
+    missing = [ch for ch, v in EMOJI_MAP.items() if not v]
+    btns = []
+    row = []
+    for ch in missing:
+        row.append(InlineKeyboardButton(ch, callback_data=f"emojipick:{ch}", color="progress"))
+        if len(row) == per_row:
+            btns.append(row); row = []
+    if row: btns.append(row)
+    btns.append([InlineKeyboardButton("📋 ផ្ញើច្រើនម្តង (Advanced)", callback_data="emojimenu:setmulti", color="active")])
+    btns.append([InlineKeyboardButton("🔙 ត្រឡប់ Menu", callback_data="emojimenu:menu", color="inactive")])
+    return InlineKeyboardMarkup(btns)
 
 def sub_admin_kb():
     """Keyboard for sub-admins (limited permissions)"""
@@ -1426,6 +1452,17 @@ def _extract_custom_emoji(src):
 #  និង unicode character ដើមដែលនៅពីក្រោម icon នីមួយៗ (មានប្រយោជន៍ដើម្បីដឹងថា
 #  emoji character មួយណានៅក្នុង EMOJI_MAP ដែលនឹងត្រូវផ្គូផ្គង)។
 # ═══════════════════════════════════════════════════════════
+def _emojiid_text(src_msg):
+    """Build the Custom Emoji ID report for a message. Returns None if none found."""
+    found = _extract_custom_emoji(src_msg)
+    if not found:
+        return None
+    lines = ["🆔 <b>Custom Emoji ID(s):</b>"]
+    for i, (ch, eid) in enumerate(found, 1):
+        known = "✅ មានក្នុង EMOJI_MAP" if ch in EMOJI_MAP else "⚠️ មិននៅក្នុង EMOJI_MAP"
+        lines.append(f"{i}. {ch} → <code>{eid}</code> ({known})")
+    return "\n".join(lines)
+
 @bot.message_handler(commands=["emojiid"])
 def cmd_emojiid(message):
     if message.from_user.id != ADMIN_ID:
@@ -1434,15 +1471,11 @@ def cmd_emojiid(message):
     if not src:
         bot.reply_to(message, "សូម Reply command នេះទៅសារដែលមាន premium emoji ជាមុនសិន។")
         return
-    found = _extract_custom_emoji(src)
-    if not found:
+    report = _emojiid_text(src)
+    if not report:
         bot.reply_to(message, "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។")
         return
-    lines = ["🆔 <b>Custom Emoji ID(s):</b>"]
-    for i, (ch, eid) in enumerate(found, 1):
-        known = "✅ មានក្នុង EMOJI_MAP" if ch in EMOJI_MAP else "⚠️ មិននៅក្នុង EMOJI_MAP"
-        lines.append(f"{i}. {ch} → <code>{eid}</code> ({known})")
-    bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
+    bot.reply_to(message, report, parse_mode="HTML")
 
 # ═══════════════════════════════════════════════════════════
 #  PREMIUM EMOJI AUTO-SET (admin-only) — លំដាប់ណាក៏បាន, ចាំបាច់មិនត្រូវ
@@ -1451,6 +1484,31 @@ def cmd_emojiid(message):
 #  នីមួយៗ ទៅនឹង custom_emoji_id ស្វ័យប្រវត្តិ (មិនអាស្រ័យលំដាប់) រួច save ជា
 #  អចិន្ត្រៃយ៍ទៅ EMOJI_MAP។ ធ្វើម្តងទៀតបានគ្រប់ពេលដើម្បីបន្ថែម/កែ emoji ថ្មី។
 # ═══════════════════════════════════════════════════════════
+def _apply_setemojis(src_msg):
+    """Extract premium emoji from src_msg, apply to EMOJI_MAP, save. Returns report text, or None if no emoji found."""
+    found = _extract_custom_emoji(src_msg)
+    if not found:
+        return None
+    lines = ["✅ <b>បានកំណត់ Emoji ដោយស្វ័យប្រវត្តិ:</b>\n"]
+    unknown = []
+    for ch, eid in found:
+        if ch in EMOJI_MAP:
+            EMOJI_MAP[ch] = eid
+            lines.append(f"{ch} → <code>{eid}</code>")
+        else:
+            unknown.append((ch, eid))
+    _save(EMOJI_FILE, EMOJI_MAP)
+
+    if unknown:
+        lines.append(f"\n⚠️ {len(unknown)} emoji មិននៅក្នុងបញ្ជីស្គាល់ (បន្ថែមក្នុង EMOJI_MAP ដោយដៃបើត្រូវការ):")
+        for ch, eid in unknown:
+            lines.append(f"  {ch} → <code>{eid}</code>")
+
+    remaining = sum(1 for v in EMOJI_MAP.values() if not v)
+    lines.append(f"\n📊 សរុប: {sum(1 for v in EMOJI_MAP.values() if v)}/{len(EMOJI_MAP)} កំណត់រួច — នៅសល់ {remaining}")
+    lines.append("🔄 Restart bot (/restart) ដើម្បីឲ្យប្រើប្រាស់ពេញលេញគ្រប់កន្លែង។")
+    return "\n".join(lines)
+
 @bot.message_handler(commands=["setemojis"])
 def cmd_setemojis(message):
     if message.from_user.id != ADMIN_ID:
@@ -1465,41 +1523,17 @@ def cmd_setemojis(message):
             f"នៅសល់ {len(missing)} emoji។ ប្រើ /emojilist ដើម្បីមើលបញ្ជីទាំងអស់។",
             parse_mode="HTML")
         return
-    found = _extract_custom_emoji(src)
-    if not found:
+    report = _apply_setemojis(src)
+    if not report:
         bot.reply_to(message, "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។")
         return
-
-    lines = ["✅ <b>បានកំណត់ Emoji ដោយស្វ័យប្រវត្តិ:</b>\n"]
-    unknown = []
-    updated = 0
-    for ch, eid in found:
-        if ch in EMOJI_MAP:
-            EMOJI_MAP[ch] = eid
-            updated += 1
-            lines.append(f"{ch} → <code>{eid}</code>")
-        else:
-            unknown.append((ch, eid))
-    _save(EMOJI_FILE, EMOJI_MAP)
-
-    if unknown:
-        lines.append(f"\n⚠️ {len(unknown)} emoji មិននៅក្នុងបញ្ជីស្គាល់ (បន្ថែមក្នុង EMOJI_MAP ដោយដៃបើត្រូវការ):")
-        for ch, eid in unknown:
-            lines.append(f"  {ch} → <code>{eid}</code>")
-
-    remaining = sum(1 for v in EMOJI_MAP.values() if not v)
-    lines.append(f"\n📊 សរុប: {sum(1 for v in EMOJI_MAP.values() if v)}/{len(EMOJI_MAP)} កំណត់រួច — នៅសល់ {remaining}")
-    lines.append("🔄 Restart bot (/restart) ដើម្បីឲ្យប្រើប្រាស់ពេញលេញគ្រប់កន្លែង។")
-    bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
+    bot.reply_to(message, report, parse_mode="HTML")
 
 # ═══════════════════════════════════════════════════════════
 #  PREMIUM EMOJI STATUS (admin-only) — មើលថា emoji មួយណាទាន់កំណត់ /
 #  មិនទាន់កំណត់ premium icon
 # ═══════════════════════════════════════════════════════════
-@bot.message_handler(commands=["emojilist"])
-def cmd_emojilist(message):
-    if message.from_user.id != ADMIN_ID:
-        return
+def _emoji_status_text():
     done = [ch for ch, v in EMOJI_MAP.items() if v]
     missing = [ch for ch, v in EMOJI_MAP.items() if not v]
     lines = [f"📊 <b>Premium Emoji Status</b> — {len(done)}/{len(EMOJI_MAP)} កំណត់រួច\n"]
@@ -1507,7 +1541,13 @@ def cmd_emojilist(message):
         lines.append("✅ រួចហើយ: " + " ".join(done))
     if missing:
         lines.append("\n⬜ នៅសល់ (fallback ទៅ unicode ធម្មតា): " + " ".join(missing))
-    bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
+    return "\n".join(lines)
+
+@bot.message_handler(commands=["emojilist"])
+def cmd_emojilist(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    bot.reply_to(message, _emoji_status_text(), parse_mode="HTML")
 
 # ═══════════════════════════════════════════════════════════
 #  START
@@ -2231,6 +2271,73 @@ def cb_set_welcome(call):
         _save(WELCOME_SETTINGS_FILE, welcome_cfg)
         bot.send_message(uid, "✅ Welcome Message reset ទៅ default!", reply_markup=admin_kb())
 # ═══════════════════════════════════════════════════════════
+@bot.callback_query_handler(func=lambda c: c.data.startswith("emojimenu:"))
+def cb_emojimenu(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID:
+        bot.answer_callback_query(call.id, "🚫 Master Admin only!"); return
+    action = call.data.split(":", 1)[1]
+    bot.answer_callback_query(call.id)
+    if action == "set":
+        missing = [ch for ch, v in EMOJI_MAP.items() if not v]
+        if not missing:
+            bot.send_message(uid, "🎉 <b>Emoji ទាំងអស់បានកំណត់រួច 100% ហើយ!</b>",
+                parse_mode="HTML", reply_markup=admin_kb()); return
+        bot.send_message(uid,
+            "✏️ <b>ជ្រើស Emoji ដែលចង់កំណត់</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "👇 ចុចលើ emoji ណាមួយខាងក្រោម រួចផ្ញើ ឬ Forward Premium version របស់វា\n"
+            "<i>bot នឹងចាប់យក custom_emoji_id ដោយស្វ័យប្រវត្តិ — មិនចាំបាច់ដឹង ID ដោយខ្លួនឯងទេ</i>\n\n"
+            f"📊 កំណត់រួច: {sum(1 for v in EMOJI_MAP.values() if v)}/{len(EMOJI_MAP)} — នៅសល់ {len(missing)}",
+            parse_mode="HTML", reply_markup=missing_emoji_kb())
+    elif action == "menu":
+        done_n = sum(1 for v in EMOJI_MAP.values() if v)
+        bot.send_message(uid,
+            f"😊 <b>Premium Emoji Settings</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"កំណត់រួច: <b>{done_n}/{len(EMOJI_MAP)}</b>\n\n"
+            f"ជ្រើសសកម្មភាព:",
+            parse_mode="HTML", reply_markup=emoji_menu_kb())
+    elif action == "setmulti":
+        waiting[uid] = "await_setemojis"
+        missing = [ch for ch, v in EMOJI_MAP.items() if not v]
+        preview = " ".join(missing[:40]) + (" ..." if len(missing) > 40 else "")
+        bot.send_message(uid,
+            "📋 <b>កំណត់ Emoji ច្រើនម្តង (Advanced)</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📤 ផ្ញើ ឬ Forward សារដែលមាន Premium Emoji ច្រើនក្នុងសារតែមួយ\n"
+            "<i>(លំដាប់ណាក៏បាន — ផ្ញើជាប់ៗគ្នាបានច្រើនសារដោយមិនចាំបាច់ចុច Menu ម្តងទៀត)</i>\n\n"
+            f"📊 កំណត់រួចហើយ: {sum(1 for v in EMOJI_MAP.values() if v)}/{len(EMOJI_MAP)} — នៅសល់ {len(missing)}\n"
+            + (f"⬜ នៅសល់: {preview}\n\n" if missing else "\n") +
+            "✕ Cancel ពេលរួចរាល់",
+            parse_mode="HTML", reply_markup=cancel_kb())
+    elif action == "list":
+        bot.send_message(uid, _emoji_status_text(), parse_mode="HTML", reply_markup=admin_kb())
+    elif action == "id":
+        waiting[uid] = "await_emojiid"
+        bot.send_message(uid,
+            "🆔 <b>យក Emoji ID</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📤 ផ្ញើ ឬ Forward សារដែលមាន Premium Emoji មកទីនេះ",
+            parse_mode="HTML", reply_markup=cancel_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("emojipick:"))
+def cb_emojipick(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID:
+        bot.answer_callback_query(call.id, "🚫 Master Admin only!"); return
+    ch = call.data.split(":", 1)[1]
+    if ch not in EMOJI_MAP:
+        bot.answer_callback_query(call.id, "❌ Emoji នេះលែងមាន!"); return
+    bot.answer_callback_query(call.id)
+    waiting[uid] = {"step": "await_setemoji_single", "char": ch}
+    bot.send_message(uid,
+        f"✏️ <b>កំណត់ Premium Emoji សម្រាប់ {ch}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📤 ផ្ញើ ឬ Forward សារដែលមាន Premium version របស់ {ch} ចូលទីនេះ\n"
+        f"<i>bot នឹងចាប់យក ID ដោយស្វ័យប្រវត្តិ ហើយភ្ជាប់ទៅ {ch} ភ្លាមៗ</i>",
+        parse_mode="HTML", reply_markup=cancel_kb())
+
 def _do_broadcast(admin_uid, message):
     waiting.pop(admin_uid, None)
     sent = failed = 0
@@ -2298,6 +2405,67 @@ def handle_msg(message):
     # ════════════════════════════════════════
     if uid == ADMIN_ID or uid in sub_admins:
         _is_master_admin = (uid == ADMIN_ID)  # gate for master-only features
+
+        # ── Premium Emoji button flow (replaces manual /setemojis, /emojiid) ──
+        if isinstance(step, dict) and step.get("step") == "await_setemoji_single" and uid == ADMIN_ID:
+            ch = step["char"]
+            found = _extract_custom_emoji(message)
+            if not found:
+                bot.send_message(uid,
+                    f"❌ រកមិនឃើញ premium emoji ក្នុងសារនោះទេ។ ផ្ញើ Premium version របស់ {ch} ម្តងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+                return  # stay in loop, waiting untouched
+            # prefer an exact match to the picked character; otherwise take the first found
+            match_eid = next((eid for c, eid in found if c == ch), found[0][1])
+            EMOJI_MAP[ch] = match_eid
+            _save(EMOJI_FILE, EMOJI_MAP)
+            waiting.pop(uid, None)
+            remaining = [c for c, v in EMOJI_MAP.items() if not v]
+            done_n = sum(1 for v in EMOJI_MAP.values() if v)
+            if remaining:
+                bot.send_message(uid,
+                    f"✅ {ch} → <code>{match_eid}</code> កំណត់ជោគជ័យ!\n"
+                    f"📊 {done_n}/{len(EMOJI_MAP)} — នៅសល់ {len(remaining)}\n\n"
+                    f"👇 ជ្រើស emoji បន្ត:",
+                    parse_mode="HTML", reply_markup=missing_emoji_kb())
+            else:
+                bot.send_message(uid,
+                    f"✅ {ch} → <code>{match_eid}</code> កំណត់ជោគជ័យ!\n\n"
+                    f"🎉 <b>រួចរាល់! Emoji ទាំងអស់បានកំណត់ 100%!</b>",
+                    parse_mode="HTML", reply_markup=admin_kb())
+            return
+
+        if step == "await_setemojis" and uid == ADMIN_ID:
+            report = _apply_setemojis(message)
+            remaining = sum(1 for v in EMOJI_MAP.values() if not v)
+            if not report:
+                bot.send_message(uid,
+                    "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។ ផ្ញើសារផ្សេងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+                return  # stay in loop, waiting untouched
+            if remaining == 0:
+                waiting.pop(uid, None)
+                bot.send_message(uid,
+                    report + "\n\n🎉 <b>រួចរាល់! Emoji ទាំងអស់បានកំណត់ 100%!</b>",
+                    parse_mode="HTML", reply_markup=admin_kb())
+            else:
+                # stay in the flow so admin can keep forwarding messages back-to-back
+                missing_preview = " ".join(ch for ch, v in EMOJI_MAP.items() if not v)[:200]
+                bot.send_message(uid,
+                    report + f"\n\n📤 ផ្ញើសារបន្តទៀត ({remaining} នៅសល់) ឬ ✕ Cancel ពេលរួច:\n⬜ {missing_preview}",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            return
+
+        if step == "await_emojiid" and uid == ADMIN_ID:
+            report = _emojiid_text(message)
+            if report:
+                bot.send_message(uid, report + "\n\n📤 ផ្ញើសារបន្តទៀត ឬ ✕ Cancel ពេលរួច:",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            else:
+                bot.send_message(uid,
+                    "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។ ផ្ញើសារផ្សេងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            return  # stay in loop, waiting untouched
 
         # Admin commands
         if text.startswith("/addbal"):
@@ -3081,6 +3249,17 @@ def handle_msg(message):
                 f"<code>{cur[:300] if cur else '(default)'}</code>\n\n"
                 f"💡 ប្រើ <code>{{}}</code> ដើម្បីដាក់ balance",
                 parse_mode="HTML", reply_markup=kb2); return
+
+        if text == "😊 កំណត់ Emoji":
+            if uid != ADMIN_ID:
+                bot.send_message(uid, "🚫 Master Admin only!", reply_markup=sub_admin_kb()); return
+            done_n = sum(1 for v in EMOJI_MAP.values() if v)
+            bot.send_message(uid,
+                f"😊 <b>Premium Emoji Settings</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"កំណត់រួច: <b>{done_n}/{len(EMOJI_MAP)}</b>\n\n"
+                f"ជ្រើសសកម្មភាព:",
+                parse_mode="HTML", reply_markup=emoji_menu_kb()); return
 
         if text.startswith("━━━"):
             bot.send_message(uid, "👇 ជ្រើស menu ខាងក្រោម:", reply_markup=admin_kb()); return
