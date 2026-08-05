@@ -20,6 +20,7 @@ from telebot.types import (
     ReplyKeyboardMarkup, KeyboardButton as _KB_orig,
     InlineKeyboardMarkup, InlineKeyboardButton as _IKB_orig
 )
+import re as _re
 
 # ── Colored / Premium-emoji buttons (Telegram Bot API 9.4+) ───────────────
 # Injects 'style' + 'icon_custom_emoji_id' into JSON so any pyTelegramBotAPI
