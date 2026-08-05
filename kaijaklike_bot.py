@@ -22,19 +22,28 @@ from telebot.types import (
 )
 
 # ── Colored / Premium-emoji buttons (Telegram Bot API 9.4+) ───────────────
-# Injects 'color' + 'icon_custom_emoji_id' into JSON so any pyTelegramBotAPI
+# Injects 'style' + 'icon_custom_emoji_id' into JSON so any pyTelegramBotAPI
 # version works, regardless of whether the installed lib already knows them.
-# Colors: "default" | "active" (green) | "inactive" (grey) | "progress" (yellow)
 #
-# ចំណាំសំខាន់អំពី icon_custom_emoji_id (Premium emoji):
-#  • ត្រូវការ Telegram Premium នៅលើ account ម្ចាស់ bot (ADMIN_ID) ដើម្បីឲ្យ
-#    icon លេចមុខពិត — បើគ្មាន Premium ទេ Telegram នឹងលាក់ icon នោះចោល
-#    (មិន error ទេ គ្រាន់តែមិនបង្ហាញ)។
-#  • emoji_id ត្រូវជាលេខ (custom_emoji_id) ពិត មិនមែនតួអក្សរ emoji ធម្មតាទេ
-#    — ត្រូវទាញយកតាម command /emojiid ខាងក្រោម។
-import re as _re
-
-# ── Premium emoji ID registry — keyed by the UNICODE EMOJI CHARACTER itself ──
+# ⚠️ សំខាន់ (រកឃើញនិងកែនៅ 2026-08-06): Telegram Bot API 9.4 កំណត់ត្រឹមតែ
+#    field ឈ្មោះ "style" ប៉ុណ្ណោះ (មិនមែន "color" ទេ) ហើយតម្លៃត្រូវជា
+#    "danger" (ក្រហម) | "primary" (ខៀវ) | "success" (បៃតង) ប៉ុណ្ណោះ។
+#    កូដចាស់ប្រើ field ឈ្មោះ "color" ខុស + តម្លៃប្រឌិតឡើងផ្ទាល់ខ្លួន
+#    ("active"/"inactive"/"progress") ដែល Telegram មិនស្គាល់ទាល់តែសោះ —
+#    មានន័យថា ពណ៌ button មិនដែលដំណើរការជាក់ស្តែងទេ តាំងពីដើមមក។
+#    _COLOR_MAP ខាងក្រោមបកប្រែឈ្មោះ semantic ចាស់ (ប្រើពាសពេញកូដរាប់រយកន្លែង)
+#    ទៅជាតម្លៃ enum ត្រឹមត្រូវ ដោយមិនចាំបាច់កែ call site ណាមួយឡើយ។
+_COLOR_MAP = {
+    "active":   "success",   # បៃតង — action ធម្មតា/ជ្រើសរើសបាន
+    "progress": "primary",   # ខៀវ — highlighted / ជំហានបន្ទាប់ / custom
+    "danger":   "danger",    # ក្រហម — លុប/បដិសេធ (បើប្រើផ្ទាល់)
+    "inactive": None,        # គ្មាន style ពិសេស — មើលទៅដូច button ធម្មតា
+    "default":  None,
+}
+def _to_style(color):
+    if not color:
+        return None
+    return _COLOR_MAP.get(color, color if color in ("danger", "primary", "success") else None)
 # គំនិត: លែងត្រូវចងចាំ "semantic key" ដូចមុនទៀតហើយ (account/topup/...) —
 # ឥឡូវ key គឺជា emoji unicode character ពិតដែលប្រើក្នុង bot (👤 💸 🛒 ...).
 # តម្លៃ = custom_emoji_id (premium) បើកំណត់រួច, None = មិនទាន់មាន → fallback
@@ -84,8 +93,9 @@ class InlineKeyboardButton(_IKB_orig):
 
     def to_dict(self):
         d = super().to_dict()
-        if self._color and self._color != "default":
-            d["color"] = self._color
+        style = _to_style(self._color)
+        if style:
+            d["style"] = style
         if self._emoji_id:
             d["icon_custom_emoji_id"] = str(self._emoji_id)
         return d
@@ -104,8 +114,9 @@ class KeyboardButton(_KB_orig):
 
     def to_dict(self):
         d = super().to_dict()
-        if self._color and self._color != "default":
-            d["style"] = self._color
+        style = _to_style(self._color)
+        if style:
+            d["style"] = style
         if self._emoji_id:
             d["icon_custom_emoji_id"] = str(self._emoji_id)
         return d
@@ -168,7 +179,18 @@ DEPOSIT_EXPIRE_SEC = 300   # 5 minutes (CamRapidPay expire 5 min)
 POLL_INTERVAL      = 8
 
 # Flask Control Server
-CONTROL_KEY        = os.getenv("CONTROL_KEY", "change_this_secret")
+# សុវត្ថិភាព: បើមិនកំណត់ CONTROL_KEY ជា env var ទេ បង្កើត key ចៃដន្យ (មិនប្រើ default
+# ដែលគេទាយបាន "change_this_secret" ទៀត) ដើម្បីការពារ /shutdown /restart /broadcast_web
+import secrets as _secrets
+_CONTROL_KEY_ENV = os.getenv("CONTROL_KEY", "")
+if not _CONTROL_KEY_ENV:
+    CONTROL_KEY = _secrets.token_urlsafe(24)
+    logger.warning(
+        "⚠️ CONTROL_KEY មិនបានកំណត់ក្នុង Environment Variable! "
+        "បង្កើត key ចៃដន្យបណ្តោះអាសន្នជំនួស (នឹងផ្លាស់ប្តូររាល់ restart): %s "
+        "→ សូមកំណត់ CONTROL_KEY ជា env var នៅ Render ដើម្បីឲ្យ key ថេរ។", CONTROL_KEY)
+else:
+    CONTROL_KEY = _CONTROL_KEY_ENV
 CONTROL_PORT       = int(os.getenv("CONTROL_PORT", "5056"))   # 👈 ប្តូរ port នេះបើដំណើរការ bot ច្រើនច្បាប់ក្នុងម៉ាស៊ីនតែមួយ (5056, 5057, 5058...)
 
 # ── Startup guard — ការពារកុំឲ្យ deploy ដោយគ្មាន credential សំខាន់ៗ ──────────
@@ -183,25 +205,34 @@ if __name__ == "__main__" and not INSTANCE_NAME:
         )
 
 # ═══════════════════════════════════════════════════════════
-#  FILES
+#  FILES  (all persisted on Render Disk so redeploy/restart never wipes data)
 # ═══════════════════════════════════════════════════════════
-WALLETS_FILE    = "smm_wallets.json"
-USERS_FILE      = "smm_users.json"
-LANG_FILE       = "smm_lang.json"
-PROMO_FILE      = "smm_promos.json"
-SETTINGS_FILE   = "smm_settings.json"
-NOTIFY_FILE     = "smm_notify.json"
+DATA_DIR        = os.environ.get("DATA_DIR", "/var/data")
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception:
+    DATA_DIR = "."   # fallback ក្នុងករណី disk មិនមាន (local/Termux test)
 
-SMM_API_FILE    = "smm_api.json"
-SMM_SVC_FILE    = "smm_services.json"
-SMM_ORD_FILE    = "smm_orders.json"
-SMM_PROFIT_FILE = "smm_profit.json"
-SMM_POLL_FILE   = "smm_poll.json"
-SMM_DEP_FILE    = "smm_deposits.json"
-SUB_ADMIN_FILE  = "smm_sub_admins.json"
-SUPPORT_CFG_FILE= "smm_support.json"
-CAMRAPID_CFG_FILE= "smm_camrapid.json"
-EMOJI_FILE      = "smm_emoji.json"
+def _dpath(name):
+    return os.path.join(DATA_DIR, name)
+
+WALLETS_FILE    = _dpath("smm_wallets.json")
+USERS_FILE      = _dpath("smm_users.json")
+LANG_FILE       = _dpath("smm_lang.json")
+PROMO_FILE      = _dpath("smm_promos.json")
+SETTINGS_FILE   = _dpath("smm_settings.json")
+NOTIFY_FILE     = _dpath("smm_notify.json")
+
+SMM_API_FILE    = _dpath("smm_api.json")
+SMM_SVC_FILE    = _dpath("smm_services.json")
+SMM_ORD_FILE    = _dpath("smm_orders.json")
+SMM_PROFIT_FILE = _dpath("smm_profit.json")
+SMM_POLL_FILE   = _dpath("smm_poll.json")
+SMM_DEP_FILE    = _dpath("smm_deposits.json")
+SUB_ADMIN_FILE  = _dpath("smm_sub_admins.json")
+SUPPORT_CFG_FILE= _dpath("smm_support.json")
+CAMRAPID_CFG_FILE= _dpath("smm_camrapid.json")
+EMOJI_FILE      = _dpath("smm_emoji.json")
 
 def _load(path, default):
     try:
@@ -398,8 +429,8 @@ bot.edit_message_reply_markup = _wrap_safe_call(bot.edit_message_reply_markup, N
 #  bot ថ្មីដំណើរការជា process ដាច់ដោយឡែក ដោយប្រើ script នេះឯងជា worker
 # ═══════════════════════════════════════════════════════════
 import subprocess as _subprocess
-CLONES_DIR     = "bot_clones"           # folder ផ្ទុក data របស់ bot រងនីមួយៗ
-CLONES_REGISTRY= "bot_clones.json"
+CLONES_DIR     = _dpath("bot_clones")    # folder ផ្ទុក data របស់ bot រងនីមួយៗ
+CLONES_REGISTRY= _dpath("bot_clones.json")
 CLONE_BASE_PORT= 5057                   # bot ដើមប្រើ 5056, clone ចាប់ពី 5057
 clone_registry = _load(CLONES_REGISTRY, {})   # name -> {token, admin_id, camrapid_key, port, pid}
 
@@ -1231,40 +1262,52 @@ def main_kb(uid=None):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     e = EMOJI_MAP
     if lang == "en":
-        kb.row(KeyboardButton("👤 My Account", emoji_id=e.get("account")),
-               KeyboardButton("💸 Top Up",      emoji_id=e.get("topup")))
-        kb.row(KeyboardButton("🛒 Order Service", emoji_id=e.get("order")))
-        kb.row(KeyboardButton("📋 Order History", emoji_id=e.get("history")),
-               KeyboardButton("🔍 Track Order",   emoji_id=e.get("track")))
-        kb.row(KeyboardButton("💬 Support", emoji_id=e.get("support")))
+        kb.row(KeyboardButton("👤 My Account", emoji_id=e.get("account"), color="active"),
+               KeyboardButton("💸 Top Up",      emoji_id=e.get("topup"),   color="progress"))
+        kb.row(KeyboardButton("🛒 Order Service", emoji_id=e.get("order"), color="active"))
+        kb.row(KeyboardButton("📋 Order History", emoji_id=e.get("history"), color="active"),
+               KeyboardButton("🔍 Track Order",   emoji_id=e.get("track"),   color="active"))
+        kb.row(KeyboardButton("💬 Support", emoji_id=e.get("support"), color="active"))
     else:
-        kb.row(KeyboardButton("👤 គណនី",            emoji_id=e.get("account")),
-               KeyboardButton("💸 បញ្ចូលលុយ",       emoji_id=e.get("topup")))
-        kb.row(KeyboardButton("🛒 បញ្ជាទិញសេវា", emoji_id=e.get("order")))
-        kb.row(KeyboardButton("📋 ប្រវត្តិការបញ្ជាទិញ", emoji_id=e.get("history")),
-               KeyboardButton("🔍 តាមដានការបញ្ជាទិញ", emoji_id=e.get("track")))
-        kb.row(KeyboardButton("💬 ជំនួយ", emoji_id=e.get("support")))
+        kb.row(KeyboardButton("👤 គណនី",            emoji_id=e.get("account"), color="active"),
+               KeyboardButton("💸 បញ្ចូលលុយ",       emoji_id=e.get("topup"),   color="progress"))
+        kb.row(KeyboardButton("🛒 បញ្ជាទិញសេវា", emoji_id=e.get("order"), color="active"))
+        kb.row(KeyboardButton("📋 ប្រវត្តិការបញ្ជាទិញ", emoji_id=e.get("history"), color="active"),
+               KeyboardButton("🔍 តាមដានការបញ្ជាទិញ", emoji_id=e.get("track"),   color="active"))
+        kb.row(KeyboardButton("💬 ជំនួយ", emoji_id=e.get("support"), color="active"))
     return kb
 
 def admin_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("📊 ការបញ្ជា SMM",  "⚙️ កំណត់ SMM API")
-    kb.row("➕ បន្ថែម SMM",    "✍️ Manual SMM")
-    kb.row("🗑️ លុប SMM",    "✏️ កែ SMM")
-    kb.row("💹 ប្រាក់ចំណេញ SMM","📋 SMM Services")
+    kb.row(KeyboardButton("📊 ការបញ្ជា SMM",  color="active"),
+           KeyboardButton("⚙️ កំណត់ SMM API", color="progress"))
+    kb.row(KeyboardButton("➕ បន្ថែម SMM",    color="active"),
+           KeyboardButton("✍️ Manual SMM",   color="active"))
+    kb.row(KeyboardButton("🗑️ លុប SMM",   color="danger"),
+           KeyboardButton("✏️ កែ SMM",     color="progress"))
+    kb.row(KeyboardButton("💹 ប្រាក់ចំណេញ SMM", color="active"),
+           KeyboardButton("📋 SMM Services",    color="active"))
     kb.row("━━━ 💰 ហិរញ្ញវត្ថុ ━━━")
-    kb.row("💰 កាបូបលុយ",      "💳 ប្រាក់បញ្ញើ")
-    kb.row("💸 បន្ថែមប្រាក់",   "💔 កាត់ប្រាក់")
+    kb.row(KeyboardButton("💰 កាបូបលុយ",   color="active"),
+           KeyboardButton("💳 ប្រាក់បញ្ញើ", color="active"))
+    kb.row(KeyboardButton("💸 បន្ថែមប្រាក់", color="active"),
+           KeyboardButton("💔 កាត់ប្រាក់",  color="danger"))
     kb.row("━━━ 👥 អ្នកប្រើ ━━━")
-    kb.row("👥 អ្នកប្រើប្រាស់",  "📊 ស្ថិតិ")
-    kb.row("📢 ផ្សព្វផ្សាយ")
-    kb.row("⏱ ល្បឿន Poll",     "💰 ឆែកលុយ API")
-    kb.row("🖼️ Welcome Photo",  "🔄 ធ្វើឱ្យទាន់សម័យ")
-    kb.row("🔔 Notify Channel", "🧪 តេស្ត Notify")
+    kb.row(KeyboardButton("👥 អ្នកប្រើប្រាស់", color="active"),
+           KeyboardButton("📊 ស្ថិតិ",       color="active"))
+    kb.row(KeyboardButton("📢 ផ្សព្វផ្សាយ", color="progress"))
+    kb.row(KeyboardButton("⏱ ល្បឿន Poll",   color="progress"),
+           KeyboardButton("💰 ឆែកលុយ API", color="active"))
+    kb.row(KeyboardButton("🖼️ Welcome Photo", color="progress"),
+           KeyboardButton("🔄 ធ្វើឱ្យទាន់សម័យ", color="progress"))
+    kb.row(KeyboardButton("🔔 Notify Channel", color="progress"),
+           KeyboardButton("🧪 តេស្ត Notify",   color="active"))
     kb.row("━━━ ⚙️ Settings ━━━")
-    kb.row("✏️ កែ Support",      "👥 Sub Admins")
-    kb.row("🔑 CamRapidPay Key", "📝 Welcome Msg")
-    kb.row("😊 កំណត់ Emoji")
+    kb.row(KeyboardButton("✏️ កែ Support",      color="progress"),
+           KeyboardButton("👥 Sub Admins",      color="progress"))
+    kb.row(KeyboardButton("🔑 CamRapidPay Key", color="progress"),
+           KeyboardButton("📝 Welcome Msg",     color="progress"))
+    kb.row(KeyboardButton("😊 កំណត់ Emoji", color="progress"))
     return kb
 
 def emoji_menu_kb():
@@ -1295,15 +1338,19 @@ def missing_emoji_kb(per_row=6):
 def sub_admin_kb():
     """Keyboard for sub-admins (limited permissions)"""
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("📊 ការបញ្ជា SMM",  "💰 កាបូបលុយ")
-    kb.row("💳 ប្រាក់បញ្ញើ",   "👥 អ្នកប្រើប្រាស់")
-    kb.row("💸 បន្ថែមប្រាក់",   "💔 កាត់ប្រាក់")
-    kb.row("📊 ស្ថិតិ",         "📢 ផ្សព្វផ្សាយ")
+    kb.row(KeyboardButton("📊 ការបញ្ជា SMM", color="active"),
+           KeyboardButton("💰 កាបូបលុយ",    color="active"))
+    kb.row(KeyboardButton("💳 ប្រាក់បញ្ញើ",   color="active"),
+           KeyboardButton("👥 អ្នកប្រើប្រាស់", color="active"))
+    kb.row(KeyboardButton("💸 បន្ថែមប្រាក់", color="active"),
+           KeyboardButton("💔 កាត់ប្រាក់",   color="danger"))
+    kb.row(KeyboardButton("📊 ស្ថិតិ",       color="active"),
+           KeyboardButton("📢 ផ្សព្វផ្សាយ", color="progress"))
     return kb
 
 def cancel_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("✕ Cancel", emoji_id=EMOJI_MAP.get("cancel")))
+    kb.row(KeyboardButton("✕ Cancel", emoji_id=EMOJI_MAP.get("cancel"), color="danger"))
     return kb
 
 def deposit_amt_kb(uid=None, promo_code=None):
@@ -1588,7 +1635,7 @@ def cmd_start(message):
         return
     _show_welcome(uid)
 
-WELCOME_SETTINGS_FILE = "smm_welcome.json"
+WELCOME_SETTINGS_FILE = _dpath("smm_welcome.json")
 welcome_cfg = _load(WELCOME_SETTINGS_FILE, {"photo_id": ""})
 
 def _save_welcome_photo(file_id):
@@ -2279,6 +2326,7 @@ def cb_emojimenu(call):
     action = call.data.split(":", 1)[1]
     bot.answer_callback_query(call.id)
     if action == "set":
+        waiting.pop(uid, None)   # ជម្រះ state ចាស់ ពេលបើក grid ថ្មី
         missing = [ch for ch, v in EMOJI_MAP.items() if not v]
         if not missing:
             bot.send_message(uid, "🎉 <b>Emoji ទាំងអស់បានកំណត់រួច 100% ហើយ!</b>",
@@ -2291,6 +2339,7 @@ def cb_emojimenu(call):
             f"📊 កំណត់រួច: {sum(1 for v in EMOJI_MAP.values() if v)}/{len(EMOJI_MAP)} — នៅសល់ {len(missing)}",
             parse_mode="HTML", reply_markup=missing_emoji_kb())
     elif action == "menu":
+        waiting.pop(uid, None)   # ជម្រះ state ចាស់ (ដូចជា await_setemoji_single) បើនៅសល់
         done_n = sum(1 for v in EMOJI_MAP.values() if v)
         bot.send_message(uid,
             f"😊 <b>Premium Emoji Settings</b>\n"
@@ -2364,6 +2413,62 @@ def handle_photo(message):
     uid = message.chat.id
     step = waiting.get(uid)
     if uid == ADMIN_ID:
+        # ── Premium Emoji flows also accept forwarded photos (caption emoji) ──
+        if isinstance(step, dict) and step.get("step") == "await_setemoji_single":
+            ch = step["char"]
+            found = _extract_custom_emoji(message)
+            if not found:
+                bot.send_message(uid,
+                    f"❌ រកមិនឃើញ premium emoji ក្នុងសារនោះទេ។ ផ្ញើ Premium version របស់ {ch} ម្តងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+                return
+            match_eid = next((eid for c, eid in found if c == ch), found[0][1])
+            EMOJI_MAP[ch] = match_eid
+            _save(EMOJI_FILE, EMOJI_MAP)
+            waiting.pop(uid, None)
+            remaining = [c for c, v in EMOJI_MAP.items() if not v]
+            done_n = sum(1 for v in EMOJI_MAP.values() if v)
+            if remaining:
+                bot.send_message(uid,
+                    f"✅ {ch} → <code>{match_eid}</code> កំណត់ជោគជ័យ!\n"
+                    f"📊 {done_n}/{len(EMOJI_MAP)} — នៅសល់ {len(remaining)}\n\n"
+                    f"👇 ជ្រើស emoji បន្ត:",
+                    parse_mode="HTML", reply_markup=missing_emoji_kb())
+            else:
+                bot.send_message(uid,
+                    f"✅ {ch} → <code>{match_eid}</code> កំណត់ជោគជ័យ!\n\n"
+                    f"🎉 <b>រួចរាល់! Emoji ទាំងអស់បានកំណត់ 100%!</b>",
+                    parse_mode="HTML", reply_markup=admin_kb())
+            return
+        if step == "await_setemojis":
+            report = _apply_setemojis(message)
+            remaining = sum(1 for v in EMOJI_MAP.values() if not v)
+            if not report:
+                bot.send_message(uid,
+                    "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។ ផ្ញើសារផ្សេងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+                return
+            if remaining == 0:
+                waiting.pop(uid, None)
+                bot.send_message(uid,
+                    report + "\n\n🎉 <b>រួចរាល់! Emoji ទាំងអស់បានកំណត់ 100%!</b>",
+                    parse_mode="HTML", reply_markup=admin_kb())
+            else:
+                missing_preview = " ".join(ch for ch, v in EMOJI_MAP.items() if not v)[:200]
+                bot.send_message(uid,
+                    report + f"\n\n📤 ផ្ញើសារបន្តទៀត ({remaining} នៅសល់) ឬ ✕ Cancel ពេលរួច:\n⬜ {missing_preview}",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            return
+        if step == "await_emojiid":
+            report = _emojiid_text(message)
+            if report:
+                bot.send_message(uid, report + "\n\n📤 ផ្ញើសារបន្តទៀត ឬ ✕ Cancel ពេលរួច:",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            else:
+                bot.send_message(uid,
+                    "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។ ផ្ញើសារផ្សេងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            return
         if step == "broadcast_msg":
             _do_broadcast(uid, message)
         elif step == "set_welcome_photo":
