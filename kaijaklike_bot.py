@@ -311,6 +311,30 @@ _TIKTOK_PACKAGES = [
         "description": "500 Likes ❤️ + 1K Views 👁 + 100 Followers 👤\n⏱ 5-15 នាទី",
         "flat_price":  1.99,
     },
+    {
+        "slug":        "manual_tiktok_promote_view1",
+        "label":       "🇰🇭 2k-5k 👁 View",
+        "description": "2K-5K Views 👁 (View ណាមួយ)\n⏱ 5-15 នាទី",
+        "flat_price":  0.99,
+    },
+    {
+        "slug":        "manual_tiktok_promote_view2",
+        "label":       "🇰🇭 5k-10k 👁 View",
+        "description": "5K-10K Views 👁 (View ណាមួយ)\n⏱ 5-15 នាទី",
+        "flat_price":  1.99,
+    },
+    {
+        "slug":        "manual_tiktok_promote_follow1",
+        "label":       "🇰🇭 100-200 👤 Follow",
+        "description": "100-200 Followers 👤\n⏱ 10-20 នាទី",
+        "flat_price":  0.99,
+    },
+    {
+        "slug":        "manual_tiktok_promote_follow2",
+        "label":       "🇰🇭 300-500 👤 Follow",
+        "description": "300-500 Followers 👤\n⏱ 10-20 នាទី",
+        "flat_price":  1.99,
+    },
 ]
 _changed = False
 for _pkg in _TIKTOK_PACKAGES:
@@ -1298,6 +1322,8 @@ def admin_kb():
            KeyboardButton("✍️ Manual SMM",   color="active"))
     kb.row(KeyboardButton("🗑️ លុប SMM",   color="danger"),
            KeyboardButton("✏️ កែ SMM",     color="progress"))
+    kb.row(KeyboardButton("📦 បន្ថែម Package", color="active"),
+           KeyboardButton("💰 កែតម្លៃ",       color="progress"))
     kb.row(KeyboardButton("💹 ប្រាក់ចំណេញ SMM", color="active"),
            KeyboardButton("📋 SMM Services",    color="active"))
     kb.row("━━━ 💰 ហិរញ្ញវត្ថុ ━━━")
@@ -1944,6 +1970,54 @@ def cb_mansvc_cat(call):
             f"ឧ: <code>0.50</code> = $0.50 per 1K\n"
             f"ឧ: <code>1.20</code> = $1.20 per 1K",
             parse_mode="HTML", reply_markup=cancel_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("pkgcat:"))
+def cb_pkgcat(call):
+    """Admin: choose category for a new flat-price Package"""
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: bot.answer_callback_query(call.id); return
+    cat = call.data[len("pkgcat:"):]
+    bot.answer_callback_query(call.id)
+    step = waiting.get(uid, {})
+    label = step.get("label", "") if isinstance(step, dict) else ""
+    if cat == "__custom__":
+        waiting[uid] = {"step": "pkg_cat_custom", "label": label}
+        bot.send_message(uid,
+            "✏️ <b>វាយ Category ផ្ទាល់ខ្លួន:</b>\nឧ: <code>TikTok Khmer</code>",
+            parse_mode="HTML", reply_markup=cancel_kb())
+    else:
+        waiting[uid] = {"step": "pkg_desc", "label": label, "cat": cat}
+        bot.send_message(uid,
+            f"📂 Category: <b>{cat}</b>\n📝 ឈ្មោះ: <b>{label}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📝 <b>ការពិពណ៌នា Package (Description)</b>\n"
+            f"ឧ: <code>1K-2K Likes ❤️ + 3.5K Views 👁</code>\n"
+            f"ឬ វាយ <code>-</code> ដើម្បីរំលង",
+            parse_mode="HTML", reply_markup=cancel_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("editprice:"))
+def cb_editprice(call):
+    """Admin: edit the price of an existing service/package"""
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: return
+    bot.answer_callback_query(call.id)
+    slug = call.data[len("editprice:"):]
+    s = smm_services.get(slug)
+    if not s:
+        bot.send_message(uid, "❌ Service រកមិនឃើញ", reply_markup=admin_kb()); return
+    waiting[uid] = {"step": "edit_svc_price", "slug": slug}
+    if s.get("flat_price"):
+        cur = f"${float(s['flat_price']):.2f} / order"
+    else:
+        cur = f"${float(s.get('cost_rate',0)):.2f} / 1K"
+    bot.send_message(uid,
+        f"💰 <b>កែតម្លៃ</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📝 {s.get('label', slug)}\n"
+        f"💵 តម្លៃបច្ចុប្បន្ន: <b>{cur}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"វាយ <b>តម្លៃថ្មី</b> (លេខទទេ):",
+        parse_mode="HTML", reply_markup=cancel_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("manord:"))
 def cb_manord(call):
@@ -3028,6 +3102,144 @@ def handle_msg(message):
                 "📝 <b>វាយ ឈ្មោះ Service:</b>\n"
                 "ឧ: <code>TikTok Likes Khmer</code>",
                 parse_mode="HTML", reply_markup=cancel_kb()); return
+
+        # ── Package (flat-price bundle): step 1 label ──
+        if text == "📦 បន្ថែម Package":
+            waiting[uid] = {"step": "pkg_label"}
+            bot.send_message(uid,
+                "📦 <b>បន្ថែម Package ថ្មី (កញ្ចប់តម្លៃថេរ)</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "<i>ប្រើសម្រាប់កញ្ចប់ Like+View+Follow ដូច TikTok Khmer\n"
+                "(តម្លៃថេរក្នុងមួយ Order — មិនគិតតាម 1K ទេ)</i>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "📝 <b>វាយ ឈ្មោះ Package:</b>\n"
+                "ឧ: <code>1K-2K Like + 3.5K View</code>",
+                parse_mode="HTML", reply_markup=cancel_kb()); return
+
+        if isinstance(step, dict) and step.get("step") == "pkg_label":
+            label = text.strip()
+            if not label:
+                bot.send_message(uid, "❌ ឈ្មោះទទេ! វាយម្តងទៀត:", reply_markup=cancel_kb()); return
+            waiting[uid] = {"step": "pkg_cat", "label": label}
+            cats_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🇰🇭 TikTok Khmer", callback_data="pkgcat:🇰🇭 TikTok Khmer", color="active")],
+                [InlineKeyboardButton("🎵 TikTok",    callback_data="pkgcat:TikTok", color="active"),
+                 InlineKeyboardButton("📘 Facebook",  callback_data="pkgcat:Facebook", color="active")],
+                [InlineKeyboardButton("📸 Instagram", callback_data="pkgcat:Instagram", color="active"),
+                 InlineKeyboardButton("▶️ YouTube",   callback_data="pkgcat:YouTube", color="active")],
+                [InlineKeyboardButton("✏️ ផ្សេង (Custom)", callback_data="pkgcat:__custom__", color="progress")],
+            ])
+            bot.send_message(uid,
+                f"📂 <b>ជ្រើស Category</b>\n📝 ឈ្មោះ: <b>{label}</b>",
+                parse_mode="HTML", reply_markup=cats_kb); return
+
+        if isinstance(step, dict) and step.get("step") == "pkg_cat_custom":
+            cat = text.strip()
+            if not cat:
+                bot.send_message(uid, "❌ Category ទទេ!", reply_markup=cancel_kb()); return
+            waiting[uid] = {"step": "pkg_desc", "label": step["label"], "cat": cat}
+            bot.send_message(uid,
+                "📝 <b>ការពិពណ៌នា Package (Description)</b>\n"
+                "ឧ: <code>1K-2K Likes ❤️ + 3.5K Views 👁</code>\n"
+                "ឬ វាយ <code>-</code> ដើម្បីរំលង",
+                parse_mode="HTML", reply_markup=cancel_kb()); return
+
+        if isinstance(step, dict) and step.get("step") == "pkg_desc":
+            desc = text.strip()
+            waiting[uid] = {**step, "step": "pkg_price", "desc": ("" if desc == "-" else desc)}
+            bot.send_message(uid,
+                "💰 <b>ដាក់តម្លៃ Package (USD / កញ្ចប់)</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "ឧ: <code>0.99</code> = $0.99 ក្នុងមួយកញ្ចប់",
+                parse_mode="HTML", reply_markup=cancel_kb()); return
+
+        if isinstance(step, dict) and step.get("step") == "pkg_price":
+            try:
+                price = float(text.replace("$","").strip())
+                if price <= 0: raise ValueError
+            except:
+                bot.send_message(uid, "❌ តម្លៃខុស! ឧ: <code>0.99</code>",
+                                 parse_mode="HTML", reply_markup=cancel_kb()); return
+            label = step["label"]; cat = step["cat"]; desc = step.get("desc", "")
+            slug = f"manual_pkg_{cat.lower().replace(' ','_')}_{int(time.time())}"
+            smm_services[slug] = {
+                "api_id":      None,
+                "manual":      True,
+                "cost_rate":   0,
+                "min":         1,
+                "max":         1,
+                "label":       label,
+                "category":    cat,
+                "flat_price":  price,
+                "preset_qtys": [1],
+                "description": desc,
+            }
+            _save(SMM_SVC_FILE, smm_services)
+            waiting.pop(uid, None)
+            bot.send_message(uid,
+                f"✅ <b>Package បានបន្ថែម!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📝 ឈ្មោះ: <b>{label}</b>\n"
+                f"📂 Category: <b>{cat}</b>\n"
+                f"💰 តម្លៃ: <b>${price:.2f}/order</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"✍️ <i>Package នេះ Admin ត្រូវ process ដោយដៃ</i>",
+                parse_mode="HTML", reply_markup=admin_kb()); return
+
+        # ── Edit price of an existing service/package ──
+        if text == "💰 កែតម្លៃ":
+            if not smm_services:
+                bot.send_message(uid, "❌ គ្មាន SMM Service ទេ", reply_markup=admin_kb()); return
+            cats = {}
+            for slug, s in smm_services.items():
+                cat = s.get("category", "Other")
+                cats.setdefault(cat, []).append((slug, s))
+            for cat, svcs in cats.items():
+                btns = []
+                for slug, s in svcs:
+                    label = s.get("label", slug)[:28]
+                    if s.get("flat_price"):
+                        price_txt = f"${float(s['flat_price']):.2f}"
+                    else:
+                        price_txt = f"${float(s.get('cost_rate',0)):.2f}/1K"
+                    btns.append([InlineKeyboardButton(
+                        f"💰 {label} ({price_txt})", callback_data=f"editprice:{slug}", color="progress")])
+                bot.send_message(uid,
+                    f"💰 <b>កែតម្លៃ — {cat}</b>\n━━━━━━━━━━━━━━━━━━\nចុចដើម្បីកែតម្លៃ:",
+                    parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns))
+            return
+
+        if isinstance(step, dict) and step.get("step") == "edit_svc_price":
+            slug = step.get("slug")
+            s    = smm_services.get(slug)
+            if not s:
+                bot.send_message(uid, "❌ Service រកមិនឃើញ", reply_markup=admin_kb())
+                waiting.pop(uid, None); return
+            try:
+                new_price = float(text.replace("$","").strip())
+                if new_price <= 0: raise ValueError
+            except:
+                bot.send_message(uid, "❌ តម្លៃខុស! ឧ: <code>1.99</code>",
+                                 parse_mode="HTML", reply_markup=cancel_kb()); return
+            is_flat = bool(s.get("flat_price"))
+            if is_flat:
+                old_price = float(s.get("flat_price", 0))
+                smm_services[slug]["flat_price"] = new_price
+                unit = "/order"
+            else:
+                old_price = float(s.get("cost_rate", 0))
+                smm_services[slug]["cost_rate"] = new_price
+                unit = "/1K"
+            _save(SMM_SVC_FILE, smm_services)
+            waiting.pop(uid, None)
+            bot.send_message(uid,
+                f"✅ <b>តម្លៃបានផ្លាស់ប្តូរ!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📝 {s.get('label', slug)}\n"
+                f"💰 ចាស់: <s>${old_price:.2f}{unit}</s>\n"
+                f"✨ ថ្មី: <b>${new_price:.2f}{unit}</b>",
+                parse_mode="HTML", reply_markup=admin_kb())
+            return
 
         if text == "📊 ការបញ្ជា SMM":
             if not smm_orders:
