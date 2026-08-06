@@ -81,15 +81,24 @@ def _leading_emoji(s):
     m = _LEADING_EMOJI_RE.match(s)
     return m.group(1) if m else None
 
+def _strip_leading_emoji_text(text, ch):
+    """ដកចេញ emoji ធម្មតា (ch) ពីដើម text បើ icon_custom_emoji_id ត្រូវបានប្រើ
+    ជំនួសរួចហើយ — បើមិនដូច្នេះទេ Telegram នឹងបង្ហាញទាំង icon premium (មុន
+    button) ព្រមទាំង emoji ធម្មតា (ក្នុង label) ក្នុងពេលតែមួយ ដែលមើលទៅដូចស្ទួន។"""
+    if not text or not isinstance(text, str) or not ch:
+        return text
+    if text.startswith(ch):
+        return text[len(ch):].lstrip()
+    return text
+
 class InlineKeyboardButton(_IKB_orig):
     def __init__(self, *args, color: str = None, emoji_id: str = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._color = color
-        if emoji_id is None:
-            label = kwargs.get("text") if "text" in kwargs else (args[0] if args else None)
-            ch = _leading_emoji(label)
-            if ch:
-                emoji_id = EMOJI_MAP.get(ch)
+        label = kwargs.get("text") if "text" in kwargs else (args[0] if args else None)
+        self._emoji_char = _leading_emoji(label)
+        if emoji_id is None and self._emoji_char:
+            emoji_id = EMOJI_MAP.get(self._emoji_char)
         self._emoji_id = emoji_id
 
     def to_dict(self):
@@ -99,6 +108,8 @@ class InlineKeyboardButton(_IKB_orig):
             d["style"] = style
         if self._emoji_id:
             d["icon_custom_emoji_id"] = str(self._emoji_id)
+            if "text" in d:
+                d["text"] = _strip_leading_emoji_text(d["text"], self._emoji_char)
         return d
 
 class KeyboardButton(_KB_orig):
@@ -106,11 +117,10 @@ class KeyboardButton(_KB_orig):
     def __init__(self, *args, color: str = None, emoji_id: str = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._color = color
-        if emoji_id is None:
-            label = kwargs.get("text") if "text" in kwargs else (args[0] if args else None)
-            ch = _leading_emoji(label)
-            if ch:
-                emoji_id = EMOJI_MAP.get(ch)
+        label = kwargs.get("text") if "text" in kwargs else (args[0] if args else None)
+        self._emoji_char = _leading_emoji(label)
+        if emoji_id is None and self._emoji_char:
+            emoji_id = EMOJI_MAP.get(self._emoji_char)
         self._emoji_id = emoji_id
 
     def to_dict(self):
@@ -120,6 +130,8 @@ class KeyboardButton(_KB_orig):
             d["style"] = style
         if self._emoji_id:
             d["icon_custom_emoji_id"] = str(self._emoji_id)
+            if "text" in d:
+                d["text"] = _strip_leading_emoji_text(d["text"], self._emoji_char)
         return d
 
 # ─────────────────────────────────────────────────────────────────────────
