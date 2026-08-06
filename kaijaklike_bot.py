@@ -124,14 +124,13 @@ class KeyboardButton(_KB_orig):
         self._emoji_id = emoji_id
 
     def to_dict(self):
+        # ⚠️ Reply-keyboard (KeyboardButton) មិនស្គាល់ field "icon_custom_emoji_id"
+        #    ទេ (វាសម្រាប់តែ InlineKeyboardButton ប៉ុណ្ណោះ) ដូច្នេះកុំកាត់ emoji
+        #    ចេញពី text — បើកាត់ចេញ, label ដែលផ្ញើទៅ Telegram (និង text ដែល
+        #    Telegram ត្រឡប់មកវិញពេលអ្នកប្រើចុច button) នឹងលែងផ្គូផ្គងនឹង
+        #    លក្ខខណ្ឌ text in (...) ក្នុង message handler ទាំងអស់ → button ធ្លាក់
+        #    ចូល fallback ("Use the menu buttons below!") រាល់ដង។
         d = super().to_dict()
-        style = _to_style(self._color)
-        if style:
-            d["style"] = style
-        if self._emoji_id:
-            d["icon_custom_emoji_id"] = str(self._emoji_id)
-            if "text" in d:
-                d["text"] = _strip_leading_emoji_text(d["text"], self._emoji_char)
         return d
 
 # ─────────────────────────────────────────────────────────────────────────
