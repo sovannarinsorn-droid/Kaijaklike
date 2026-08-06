@@ -112,6 +112,25 @@ class InlineKeyboardButton(_IKB_orig):
                 d["text"] = _strip_leading_emoji_text(d["text"], self._emoji_char)
         return d
 
+# ⚠️ កំណត់ត្រា (កែនៅ 2026-08-06 លើកទី ២): ការយល់ដឹងមុននេះខុស — Telegram
+#    Bot API 9.4 ពិតជា support "icon_custom_emoji_id" + "style" លើ
+#    KeyboardButton (reply keyboard) ដែរ ដូចគ្នានឹង InlineKeyboardButton
+#    (មើល core.telegram.org/bots/api → KeyboardButton object). មូលហេតុពិត
+#    ដែល emoji premium មិនបង្ហាញ គឺ to_dict() ចាស់ **មិនដែលដាក់ field នេះ
+#    ចូល JSON ទាល់តែសោះ**។
+#    ⚠️ លក្ខខណ្ឌចាំបាច់ពី Telegram: bot owner ត្រូវមាន Telegram Premium
+#    សកម្ម (ឬ bot ទិញ additional username លើ Fragment) មិនដូច្នេះទេ
+#    Telegram នឹងមិនបង្ហាញ icon នេះឡើយ ទោះកូដត្រឹមត្រូវក៏ដោយ។
+#
+#    ឥឡូវនេះកូដខាងក្រោមកាត់ emoji unicode ចេញពី text ដូច InlineKeyboardButton
+#    ដែរ (ដើម្បីកុំឲ្យស្ទួន icon+emoji) ប៉ុន្ដែ ដើម្បីកុំឲ្យ button ធ្លាក់ចូល
+#    fallback ("មិនស្គាល់ button") នៅពេល Telegram ត្រឡប់ text ដែលកាត់រួច
+#    មកវិញ, យើងកត់ត្រា mapping "text ដែលកាត់ → text ដើម (មាន emoji)" ក្នុង
+#    _STRIPPED_TEXT_MAP ។ MAIN MESSAGE HANDLER ត្រូវ restore text ដើមវិញ
+#    មុននឹង match លក្ខខណ្ឌ text == / text in (...) ណាមួយ (មើល "# ── Restore
+#    stripped-emoji text ──" ក្នុង handle_msg)។
+_STRIPPED_TEXT_MAP = {}
+
 class KeyboardButton(_KB_orig):
     """Reply-keyboard button ដែលអាចដាក់ premium emoji icon បាន (user-side only)."""
     def __init__(self, *args, color: str = None, emoji_id: str = None, **kwargs):
@@ -128,13 +147,14 @@ class KeyboardButton(_KB_orig):
         style = _to_style(self._color)
         if style:
             d["style"] = style
-        # ⚠️ ចេតនាមិនកាត់ emoji ចេញពី text ទេ (ដូច InlineKeyboardButton) —
-        #    Reply-keyboard (KeyboardButton) មិនស្គាល់ field "icon_custom_emoji_id"
-        #    ទេ (វាសម្រាប់តែ InlineKeyboardButton ប៉ុណ្ណោះ)។ បើកាត់ emoji ចេញ,
-        #    label ដែលផ្ញើទៅ Telegram (និង text ដែល Telegram ត្រឡប់មកវិញពេល
-        #    អ្នកប្រើចុច button) នឹងលែងផ្គូផ្គងនឹងលក្ខខណ្ឌ text in (...) ក្នុង
-        #    message handler ទាំងអស់ → button ធ្លាក់ចូល fallback ("Use the menu
-        #    buttons below!") រាល់ដង។
+        if self._emoji_id and "text" in d:
+            original_text = d["text"]
+            d["icon_custom_emoji_id"] = str(self._emoji_id)
+            stripped = _strip_leading_emoji_text(original_text, self._emoji_char)
+            if stripped != original_text:
+                # កត់ត្រា mapping ដើម្បីឲ្យ handler ចាស់ៗនៅតែដំណើរការធម្មតា
+                _STRIPPED_TEXT_MAP[stripped] = original_text
+                d["text"] = stripped
         return d
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1395,6 +1415,27 @@ def cancel_kb():
     kb.row(KeyboardButton("✕ Cancel", emoji_id=EMOJI_MAP.get("cancel"), color="danger"))
     return kb
 
+def _warm_stripped_text_map():
+    """ហៅ .to_dict() លើ reply-keyboard ចម្បងទាំងអស់ (KH + EN) មួយដងពេល bot
+    ចាប់ផ្ដើម ដើម្បីបំពេញ _STRIPPED_TEXT_MAP ជាមុន — កុំឲ្យមាន window ខ្លីៗ
+    ចន្លោះពេល bot restart និងពេលផ្ញើ keyboard ថ្មីទៅ user ដែលអាចធ្វើឲ្យ
+    ប៊ូតុងចាស់ (ដែល client នៅចាំ) ធ្លាក់ចូល fallback "មិនស្គាល់ button"។"""
+    def _dump(kb):
+        for row in kb.keyboard:
+            for btn in row:
+                if hasattr(btn, "to_dict"):
+                    btn.to_dict()
+    try:
+        _dump(main_kb())                      # lang="kh" default
+        user_lang["__warmup__"] = "en"
+        _dump(main_kb(uid="__warmup__"))
+        user_lang.pop("__warmup__", None)
+        _dump(admin_kb())
+        _dump(sub_admin_kb())
+        _dump(cancel_kb())
+    except Exception as e:
+        logger.warning(f"⚠️ _warm_stripped_text_map failed: {e}")
+
 def deposit_amt_kb(uid=None, promo_code=None):
     lang = get_lang(uid) if uid else "kh"
     # Preset amounts
@@ -2579,6 +2620,14 @@ def handle_msg(message):
     uid     = message.chat.id
     uid_str = str(uid)
     text    = message.text or ""
+    # ── Restore stripped-emoji text ──
+    # បើ text នេះជា button ដែលមាន premium emoji icon (KeyboardButton.to_dict()
+    # បានកាត់ emoji unicode ចេញពី label ដើម្បីកុំឲ្យស្ទួន icon), Telegram នឹង
+    # ត្រឡប់តែ text ដែលកាត់រួច (គ្មាន emoji) មកវិញ។ ត្រូវ restore ទៅ text ដើម
+    # (មាន emoji) វិញនៅទីនេះ មុននឹង logic ខាងក្រោម match text == / text in (...)
+    # ណាមួយ — បើមិនធ្វើដូច្នេះទេ ប៊ូតុងទាំងអស់ដែលកំណត់ emoji premium នឹងធ្លាក់
+    # ចូល fallback "មិនស្គាល់ button" រាល់ដង។
+    text    = _STRIPPED_TEXT_MAP.get(text, text)
     lang    = get_lang(uid)
     step    = waiting.get(uid)
 
@@ -4037,6 +4086,7 @@ if __name__ == "__main__":
     logger.info(f"🚀 Kaijaklike Bot [{INSTANCE_NAME or 'MASTER'}] កំពុងចាប់ផ្ដើម...")
     logger.info(f"🔑 Control Key: {CONTROL_KEY}  ← ដូរនៅ CONTROL_KEY!")
     logger.info(f"📊 Services loaded: {len(smm_services)}")
+    _warm_stripped_text_map()
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=_self_ping, daemon=True).start()
     if IS_MASTER:
