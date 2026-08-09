@@ -65,6 +65,7 @@ _EMOJI_CHAR_LIST = [
     '🖼️', '📘', '📸', '⚡', '📭', '📞', '🔖', '👜', '🙍', '🛠️',
     '★', '🎁', '🧵', '👀', '😍', '🛡️', '📏', '📎', '🔓', '⬅️',
     '✨', '➡️', '🔌', '🔵', '🟡', '📤', '🔕', '📁', '🚀', '←',
+    '⏱', '🆔', '▶️',
 ]
 EMOJI_MAP = {ch: None for ch in _EMOJI_CHAR_LIST}
 # ធ្វើ regex pattern មួយសម្រាប់ចាប់ emoji នៅដើម string (រួមទាំង variation
@@ -687,10 +688,8 @@ def t(uid, key, *args):
 
 def lang_select_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇰🇭 ខ្មែរ", callback_data="setlang:kh", color="active",
-                              emoji_id=EMOJI_MAP.get("lang_kh")),
-         InlineKeyboardButton("🇬🇧 English", callback_data="setlang:en", color="active",
-                              emoji_id=EMOJI_MAP.get("lang_en"))]
+        [InlineKeyboardButton("🇰🇭 ខ្មែរ", callback_data="setlang:kh", color="active"),
+         InlineKeyboardButton("🇬🇧 English", callback_data="setlang:en", color="active")]
     ])
 
 # ═══════════════════════════════════════════════════════════
@@ -1412,7 +1411,7 @@ def sub_admin_kb():
 
 def cancel_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("✕ Cancel", emoji_id=EMOJI_MAP.get("cancel"), color="danger"))
+    kb.row(KeyboardButton("✕ Cancel", color="danger"))
     return kb
 
 def _warm_stripped_text_map():
@@ -1443,15 +1442,14 @@ def deposit_amt_kb(uid=None, promo_code=None):
     btns = []
     row = []
     for i, amt in enumerate(amounts):
-        row.append(InlineKeyboardButton(f"💵 ${amt}", callback_data=f"dep:amt:{amt}", color="active",
-                                         emoji_id=EMOJI_MAP.get("amount")))
+        row.append(InlineKeyboardButton(f"💵 ${amt}", callback_data=f"dep:amt:{amt}", color="active"))
         if len(row) == 3:
             btns.append(row); row = []
     if row: btns.append(row)
     # Custom amount
     btns.append([InlineKeyboardButton(
         "✏️ ចំនួនផ្សេង" if lang=="kh" else "✏️ Custom Amount",
-        callback_data="dep:custom", color="progress", emoji_id=EMOJI_MAP.get("custom_amt"))])
+        callback_data="dep:custom", color="progress")])
     return InlineKeyboardMarkup(btns)
 
 def smm_cat_kb():
@@ -1468,13 +1466,12 @@ def smm_cat_kb():
         for key, ico in PLATFORM_ICONS.items():
             if key in cat.lower(): icon = ico; break
         btns.append([InlineKeyboardButton(f"{icon}  {cat}", callback_data=f"smmcat:{cat}", color="active")])
-    btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:main", color="inactive",
-                                       emoji_id=EMOJI_MAP.get("back"))])
+    btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:main", color="inactive")])
     return InlineKeyboardMarkup(btns)
 
 def smm_svc_kb(cat):
     SVC_ICONS = {
-        "follower":"👤","like":"❤️","view":"👁","comment":"💬",
+        "follower":"👤","like":"❤️","view":"👁️","comment":"💬",
         "share":"🔗","save":"🔖","member":"👥","subscriber":"🔔",
         "watch":"👀","reaction":"😍",
     }
@@ -1486,8 +1483,7 @@ def smm_svc_kb(cat):
         for key, ico in SVC_ICONS.items():
             if key in label.lower(): icon = ico; break
         btns.append([InlineKeyboardButton(f"{icon}  {label}", callback_data=f"smmsvc:{slug}", color="active")])
-    btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:smmcats", color="inactive",
-                                       emoji_id=EMOJI_MAP.get("back"))])
+    btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:smmcats", color="inactive")])
     return InlineKeyboardMarkup(btns)
 
 def smm_qty_kb(slug, s):
@@ -1501,8 +1497,7 @@ def smm_qty_kb(slug, s):
         flat = float(s["flat_price"])
         btns = [[InlineKeyboardButton(
             f"✅ Order — ${flat:.2f}", callback_data=f"smmqty:{slug}:1", color="active")]]
-        btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:smmcats", color="inactive",
-                                           emoji_id=EMOJI_MAP.get("back"))])
+        btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:smmcats", color="inactive")])
         return InlineKeyboardMarkup(btns)
     preset = s.get("preset_qtys")
     if preset and isinstance(preset, list):
@@ -1518,8 +1513,7 @@ def smm_qty_kb(slug, s):
         price = sr * q / 1000
         btns.append([InlineKeyboardButton(
             f"{q:,} {first} — ${price:.2f}", callback_data=f"smmqty:{slug}:{q}", color="active")])
-    btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:smmcats", color="inactive",
-                                       emoji_id=EMOJI_MAP.get("back"))])
+    btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:smmcats", color="inactive")])
     return InlineKeyboardMarkup(btns)
 
 # ═══════════════════════════════════════════════════════════
@@ -2299,7 +2293,7 @@ def cb_cln_view(call):
                InlineKeyboardButton("🔄 Restart", callback_data=f"cln_restart|{name}", color="progress"))
     else:
         kb.add(InlineKeyboardButton("▶️ ដំណើរការ", callback_data=f"cln_start|{name}", color="active"))
-    kb.add(InlineKeyboardButton("🗑 លុប", callback_data=f"cln_delete|{name}", color="inactive"))
+    kb.add(InlineKeyboardButton("🗑️ លុប", callback_data=f"cln_delete|{name}", color="inactive"))
     kb.add(InlineKeyboardButton("⬅️ ត្រឡប់", callback_data="cln_list", color="inactive"))
     bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
 
@@ -2353,7 +2347,7 @@ def cb_cln_actions(call):
                                 InlineKeyboardButton("🔄 Restart", callback_data=f"cln_restart|{name}", color="progress"))
     else:
         cb_cln_view_inline.add(InlineKeyboardButton("▶️ ដំណើរការ", callback_data=f"cln_start|{name}", color="active"))
-    cb_cln_view_inline.add(InlineKeyboardButton("🗑 លុប", callback_data=f"cln_delete|{name}", color="inactive"))
+    cb_cln_view_inline.add(InlineKeyboardButton("🗑️ លុប", callback_data=f"cln_delete|{name}", color="inactive"))
     bot.send_message(uid, f"🤖 {name}", reply_markup=cb_cln_view_inline)
 
 # ═══════════════════════════════════════════════════════════
