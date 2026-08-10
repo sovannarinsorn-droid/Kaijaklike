@@ -266,6 +266,7 @@ SMM_ORD_FILE    = _dpath("smm_orders.json")
 SMM_PROFIT_FILE = _dpath("smm_profit.json")
 SMM_POLL_FILE   = _dpath("smm_poll.json")
 SMM_DEP_FILE    = _dpath("smm_deposits.json")
+DEP_BONUS_FILE  = _dpath("smm_deposit_bonus.json")
 SUB_ADMIN_FILE  = _dpath("smm_sub_admins.json")
 SUPPORT_CFG_FILE= _dpath("smm_support.json")
 CAMRAPID_CFG_FILE= _dpath("smm_camrapid.json")
@@ -302,6 +303,11 @@ smm_orders   = _load(SMM_ORD_FILE,   {})
 smm_profit   = _load(SMM_PROFIT_FILE,{"pct": 20})
 smm_poll     = _load(SMM_POLL_FILE,  {"interval": POLL_INTERVAL})
 smm_deps     = _load(SMM_DEP_FILE,   {})
+
+# ── Auto Deposit Bonus — "ដាក់ $1 ឡើងទៅ ទទួល 5% ត្រលប់មកវិញ" ──────────
+# enabled: បើក/បិទ Auto Bonus, min_amount: ចំនួនអប្បបរមាដែលទទួលបាន Bonus,
+# pct: ភាគរយ Bonus (គិតលើចំនួនប្រាក់ដែលដាក់)។ កែបានពី Admin Menu → 🎁 Bonus ដាក់លុយ
+dep_bonus_cfg = _load(DEP_BONUS_FILE, {"enabled": True, "min_amount": 1.0, "pct": 5.0})
 
 # ── Auto-seed TikTok Promote Khmer packages ──
 _TIKTOK_PACKAGES = [
@@ -748,6 +754,29 @@ def _smm_get_categories():
 def _smm_get_svcs_in_cat(cat):
     return [(slug, s) for slug, s in smm_services.items() if s.get("category") == cat]
 
+def _auto_dep_bonus(amount):
+    """ត្រឡប់ Bonus ស្វ័យប្រវត្តិ (USD) សម្រាប់ចំនួនប្រាក់ដែលដាក់ — 0 បើមិនចូលលក្ខខណ្ឌ។"""
+    try:
+        if not dep_bonus_cfg.get("enabled", True):
+            return 0.0
+        amount = float(amount)
+        min_amt = float(dep_bonus_cfg.get("min_amount", 1.0))
+        if amount < min_amt:
+            return 0.0
+        pct = float(dep_bonus_cfg.get("pct", 5.0))
+        if pct <= 0:
+            return 0.0
+        return round(amount * pct / 100, 2)
+    except Exception:
+        return 0.0
+
+def _dep_bonus_status_text():
+    c = dep_bonus_cfg
+    if not c.get("enabled", True):
+        return "🎁 <b>Bonus ដាក់លុយ៖</b> <i>បិទ</i>"
+    return (f"🎁 <b>Bonus ដាក់លុយ៖</b> <b>{float(c.get('pct',5.0)):.0f}%</b> "
+            f"(ដាក់ចាប់ពី <b>${float(c.get('min_amount',1.0)):.2f}</b> ឡើងទៅ)")
+
 def _smm_profit_pct(): return float(smm_profit.get("pct", 20))
 
 def _smm_sell_rate(cost, slug=None):
@@ -1183,7 +1212,9 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
         dep = smm_deps.get(dep_id)
         if not dep or dep.get("status") != "pending": return
         if _camrapid_check(reference):
-            bonus = float(dep.get("bonus") or 0)
+            bonus       = float(dep.get("bonus") or 0)
+            promo_bonus = float(dep.get("promo_bonus") or 0)
+            auto_bonus  = float(dep.get("auto_bonus") or 0)
             total = round(amount + bonus, 2)
             add_bal(uid, total)
             smm_deps[dep_id]["status"] = "confirmed"
@@ -1192,8 +1223,10 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
             msg = (f"✅ <b>ដាក់លុយបានជោគជ័យហើយ!</b> 🎉\n"
                    f"━━━━━━━━━━━━━━━━━━\n"
                    f"💰 បានទទួល: <b>${amount:.2f}</b>")
-            if bonus > 0:
-                msg += f"\n🎟️ Promo Bonus: <b>+${bonus:.2f}</b>"
+            if promo_bonus > 0:
+                msg += f"\n🎟️ Promo Bonus: <b>+${promo_bonus:.2f}</b>"
+            if auto_bonus > 0:
+                msg += f"\n🎁 Auto Bonus: <b>+${auto_bonus:.2f}</b>"
             msg += f"\n💳 Balance: <b>${new_b:.2f}</b>\n━━━━━━━━━━━━━━━━━━\n💙 អរគុណដែលប្រើ Kaijaklike!"
             try: bot.send_message(uid, msg, parse_mode="HTML", reply_markup=main_kb(uid))
             except: pass
@@ -1201,7 +1234,8 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
                 bot.send_message(ADMIN_ID,
                     f"💰 <b>ដាក់លុយ ✅</b>\n👤 <code>{uid_str}</code>\n"
                     f"📌 Ref: <code>{reference}</code>\n"
-                    f"💰 ${amount:.2f}" + (f" + Bonus ${bonus:.2f}" if bonus > 0 else ""),
+                    f"💰 ${amount:.2f}" + (f" + Bonus ${bonus:.2f}" if bonus > 0 else "") +
+                    (f" (Promo ${promo_bonus:.2f} / Auto ${auto_bonus:.2f})" if (promo_bonus > 0 and auto_bonus > 0) else ""),
                     parse_mode="HTML")
             except: pass
             # Notify channel — call _notify directly to avoid any config issues
@@ -1227,7 +1261,8 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
         try: bot.send_message(uid, "⏰ <b>QR ផុតកំណត់!</b> សូម top up ម្តងទៀត", parse_mode="HTML")
         except: pass
 
-def _send_deposit_qr(uid, amount, promo_code=None, label="💸 ដាក់លុយ", bonus=0.0, promo_code_name=None):
+def _send_deposit_qr(uid, amount, promo_code=None, label="💸 ដាក់លុយ", bonus=0.0, promo_code_name=None,
+                      promo_bonus=0.0, auto_bonus=0.0):
     """Create KHQR via CamRapidPay API → send branded QR card to user"""
     uid_str       = str(uid)
     promo_applied = promo_code_name
@@ -1249,18 +1284,25 @@ def _send_deposit_qr(uid, amount, promo_code=None, label="💸 ដាក់ល�
         "amount":      amount,
         "status":      "pending",
         "bonus":       bonus,
+        "promo_bonus": promo_bonus,
+        "auto_bonus":  auto_bonus,
         "promo":       promo_applied or "",
         "reference":   reference,
         "payment_url": payment_url,
     }
     _save(SMM_DEP_FILE, smm_deps)
 
-    if promo_applied and bonus > 0:
+    if promo_applied and promo_bonus > 0:
         confirm_promo(promo_applied, uid)
 
     # Caption text (shown below card photo)
     ref_short = reference[-12:] if len(reference) > 12 else reference
-    bonus_line = f"\n🎁 Bonus: <b>+${bonus:.2f}</b> ({promo_applied})" if (promo_applied and bonus > 0) else ""
+    bonus_bits = []
+    if promo_bonus > 0:
+        bonus_bits.append(f"🎟️ Promo Bonus: <b>+${promo_bonus:.2f}</b> ({promo_applied})")
+    if auto_bonus > 0:
+        bonus_bits.append(f"🎁 Auto Bonus ({dep_bonus_cfg.get('pct',5):.0f}%): <b>+${auto_bonus:.2f}</b>")
+    bonus_line = ("\n" + "\n".join(bonus_bits)) if bonus_bits else ""
     cap = (f"💸 <b>SMM Panel — បញ្ចូលលុយ</b>{bonus_line}\n"
            f"💰 Amount: <b>${amount:.2f}</b>\n"
            f"🔖 Ref: <code>{ref_short}</code>\n"
@@ -1298,20 +1340,24 @@ def _get_dep_promo(uid):
 
 def _process_deposit(uid, uid_str, amount, promo_code=None):
     lang  = get_lang(uid)
-    bonus = 0.0
+    promo_bonus = 0.0
     promo_applied = None
     if promo_code:
         p = promos.get(promo_code.upper())
         if p and (p.get("uses", 0) == 0 or p.get("used", 0) < p.get("uses", 0)):
             if str(uid) not in p.get("user_used", {}):
                 if p.get("pct", False):
-                    bonus = round(amount * float(p["discount"]) / 100, 2)
+                    promo_bonus = round(amount * float(p["discount"]) / 100, 2)
                 else:
-                    bonus = round(float(p["discount"]), 2)
+                    promo_bonus = round(float(p["discount"]), 2)
                 promo_applied = promo_code.upper()
+    # ── Auto Deposit Bonus (stacks on top of any promo bonus) ──
+    auto_bonus  = _auto_dep_bonus(amount)
+    total_bonus = round(promo_bonus + auto_bonus, 2)
     _send_deposit_qr(uid, amount,
                      label=f"💸 <b>{'ដាក់លុយ' if lang=='kh' else 'Top Up'}</b>",
-                     bonus=bonus, promo_code_name=promo_applied)
+                     bonus=total_bonus, promo_code_name=promo_applied,
+                     promo_bonus=promo_bonus, auto_bonus=auto_bonus)
 
 # ═══════════════════════════════════════════════════════════
 #  KEYBOARDS
@@ -1353,6 +1399,7 @@ def admin_kb():
            KeyboardButton("💳 ប្រាក់បញ្ញើ", color="active"))
     kb.row(KeyboardButton("💸 បន្ថែមប្រាក់", color="active"),
            KeyboardButton("💔 កាត់ប្រាក់",  color="danger"))
+    kb.row(KeyboardButton("🎁 Bonus ដាក់លុយ", color="progress"))
     kb.row("━━━ 👥 អ្នកប្រើ ━━━")
     kb.row(KeyboardButton("👥 អ្នកប្រើប្រាស់", color="active"),
            KeyboardButton("📊 ស្ថិតិ",       color="active"))
@@ -1768,6 +1815,40 @@ def cb_poll(call):
     try: bot.edit_message_text(f"✅ Poll Speed = <b>{sec} វិ</b>",
                                chat_id=uid, message_id=call.message.message_id, parse_mode="HTML")
     except: pass
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("depbonus:"))
+def cb_depbonus(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID and uid not in sub_admins:
+        bot.answer_callback_query(call.id); return
+    action = call.data.split(":", 1)[1]
+    if action == "toggle":
+        dep_bonus_cfg["enabled"] = not dep_bonus_cfg.get("enabled", True)
+        _save(DEP_BONUS_FILE, dep_bonus_cfg)
+        bot.answer_callback_query(call.id, "✅ បានប្តូរស្ថានភាព")
+        btns = InlineKeyboardMarkup()
+        toggle_label = "🔴 បិទ Auto Bonus" if dep_bonus_cfg.get("enabled", True) else "🟢 បើក Auto Bonus"
+        btns.add(InlineKeyboardButton(toggle_label, callback_data="depbonus:toggle",
+                                      color=("danger" if dep_bonus_cfg.get("enabled", True) else "active")))
+        btns.add(InlineKeyboardButton("✏️ កែ % / ចំនួនអប្បបរមា", callback_data="depbonus:edit", color="progress"))
+        try:
+            bot.edit_message_text(
+                f"{_dep_bonus_status_text()}\n━━━━━━━━━━━━━━━━━━\n"
+                f"👉 អ្នកប្រើដាក់លុយចាប់ពី <b>${float(dep_bonus_cfg.get('min_amount',1.0)):.2f}</b> ឡើងទៅ "
+                f"នឹងទទួល Bonus <b>{float(dep_bonus_cfg.get('pct',5.0)):.0f}%</b> បញ្ចូល Balance ដោយស្វ័យប្រវត្តិ "
+                f"(បូកបន្ថែមលើ Promo Code ប្រសិនបើមាន)។",
+                chat_id=uid, message_id=call.message.message_id, parse_mode="HTML", reply_markup=btns)
+        except: pass
+        return
+    if action == "edit":
+        bot.answer_callback_query(call.id)
+        waiting[uid] = {"step": "depbonus_edit"}
+        bot.send_message(uid,
+            f"✏️ <b>កែ Bonus ដាក់លុយ</b>\n"
+            f"បច្ចុប្បន្ន: ចាប់ពី ${float(dep_bonus_cfg.get('min_amount',1.0)):.2f} → {float(dep_bonus_cfg.get('pct',5.0)):.0f}%\n\n"
+            f"ផ្ញើជា <code>ចំនួនអប្បបរមា,ភាគរយ</code>\nឧ: <code>1,5</code> (ដាក់ $1 ឡើងទៅ ទទួល 5%)",
+            parse_mode="HTML", reply_markup=cancel_kb())
+        return
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dep:"))
 def cb_dep(call):
@@ -3008,6 +3089,26 @@ def handle_msg(message):
                     parse_mode="HTML", reply_markup=admin_kb())
             return
 
+        if isinstance(step, dict) and step.get("step") == "depbonus_edit":
+            try:
+                parts = [p.strip() for p in text.replace("$", "").split(",")]
+                if len(parts) != 2:
+                    raise ValueError
+                min_amt = float(parts[0]); pct = float(parts[1])
+                if min_amt < 0 or pct < 0:
+                    raise ValueError
+                dep_bonus_cfg["min_amount"] = min_amt
+                dep_bonus_cfg["pct"] = pct
+                _save(DEP_BONUS_FILE, dep_bonus_cfg)
+                waiting.pop(uid, None)
+                bot.send_message(uid, f"✅ បានកែ!\n{_dep_bonus_status_text()}",
+                                 parse_mode="HTML", reply_markup=admin_kb())
+            except Exception:
+                bot.send_message(uid,
+                    "❌ ទម្រង់ខុស! សូមផ្ញើជា <code>ចំនួនអប្បបរមា,ភាគរយ</code>\nឧ: <code>1,5</code> (ដាក់ $1 ឡើងទៅ ទទួល 5%)",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            return
+
         if isinstance(step, dict) and step.get("step") == "smm_set_profit":
             try:
                 pct = float(text)
@@ -3373,6 +3474,19 @@ def handle_msg(message):
                 f"💹 <b>ប្រាក់ចំណេញ SMM: {_smm_profit_pct():.0f}%</b>\nផ្ញើ % ថ្មី:",
                 parse_mode="HTML", reply_markup=cancel_kb()); return
 
+        if text == "🎁 Bonus ដាក់លុយ":
+            btns = InlineKeyboardMarkup()
+            toggle_label = "🔴 បិទ Auto Bonus" if dep_bonus_cfg.get("enabled", True) else "🟢 បើក Auto Bonus"
+            btns.add(InlineKeyboardButton(toggle_label, callback_data="depbonus:toggle",
+                                          color=("danger" if dep_bonus_cfg.get("enabled", True) else "active")))
+            btns.add(InlineKeyboardButton("✏️ កែ % / ចំនួនអប្បបរមា", callback_data="depbonus:edit", color="progress"))
+            bot.send_message(uid,
+                f"{_dep_bonus_status_text()}\n━━━━━━━━━━━━━━━━━━\n"
+                f"👉 អ្នកប្រើដាក់លុយចាប់ពី <b>${float(dep_bonus_cfg.get('min_amount',1.0)):.2f}</b> ឡើងទៅ "
+                f"នឹងទទួល Bonus <b>{float(dep_bonus_cfg.get('pct',5.0)):.0f}%</b> បញ្ចូល Balance ដោយស្វ័យប្រវត្តិ "
+                f"(បូកបន្ថែមលើ Promo Code ប្រសិនបើមាន)។",
+                parse_mode="HTML", reply_markup=btns); return
+
         if text == "💰 ឆែកលុយ API":
             url = smm_api.get("url",""); key = smm_api.get("key","")
             if not url or not key:
@@ -3734,19 +3848,25 @@ def handle_msg(message):
             bot.send_message(uid, "❌ ចំនួនខុស! ឧ: <code>5.00</code>", parse_mode="HTML"); return
         waiting.pop(uid, None)
         user_uid = int(dep["uid"])
-        # Credit balance manually
-        bonus = float(dep.get("bonus") or 0)
+        # Credit balance manually — recompute auto bonus against the actual paid amount
+        promo_bonus = float(dep.get("promo_bonus") or 0)
+        auto_bonus  = _auto_dep_bonus(paid)
+        bonus = round(promo_bonus + auto_bonus, 2)
         total = round(paid + bonus, 2)
         add_bal(user_uid, total)
-        smm_deps[dep_id]["status"] = "confirmed"
-        smm_deps[dep_id]["amount"] = paid
+        smm_deps[dep_id]["status"]      = "confirmed"
+        smm_deps[dep_id]["amount"]      = paid
+        smm_deps[dep_id]["bonus"]       = bonus
+        smm_deps[dep_id]["auto_bonus"]  = auto_bonus
         _save(SMM_DEP_FILE, smm_deps)
         new_b = bal(user_uid)
         msg = (f"✅ <b>ដាក់លុយបានជោគជ័យ!</b>\n"
                f"━━━━━━━━━━━━━━━━━━\n"
                f"💰 បញ្ញើ: <b>${paid:.2f}</b>")
-        if bonus > 0:
-            msg += f"\n🎟️ Promo Bonus: <b>+${bonus:.2f}</b>"
+        if promo_bonus > 0:
+            msg += f"\n🎟️ Promo Bonus: <b>+${promo_bonus:.2f}</b>"
+        if auto_bonus > 0:
+            msg += f"\n🎁 Auto Bonus: <b>+${auto_bonus:.2f}</b>"
         msg += f"\n💳 Balance: <b>${new_b:.2f}</b>"
         try: bot.send_message(user_uid, msg, parse_mode="HTML", reply_markup=main_kb(user_uid))
         except: pass
@@ -3886,11 +4006,20 @@ def handle_msg(message):
     if text in ("💰 ដាក់ប្រាក់", "💰 Top Up", "💸 បញ្ចូលលុយ", "💸 Top Up"):
         b = bal(uid)
         waiting.pop(uid, None)
+        bonus_line = ""
+        if dep_bonus_cfg.get("enabled", True) and float(dep_bonus_cfg.get("pct", 0)) > 0:
+            min_amt = float(dep_bonus_cfg.get("min_amount", 1.0))
+            pct     = float(dep_bonus_cfg.get("pct", 5.0))
+            bonus_line = (
+                f"\n🎁 <i>ដាក់ចាប់ពី ${min_amt:.2f} ឡើងទៅ ទទួល Bonus {pct:.0f}% ភ្លាមៗ!</i>\n"
+                if lang == "kh" else
+                f"\n🎁 <i>Deposit ${min_amt:.2f}+ and get {pct:.0f}% bonus instantly!</i>\n"
+            )
         bot.send_message(uid,
             f"💸 <b>{'ដាក់លុយ' if lang=='kh' else 'Top Up'}</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💳 Balance: <b>${b:.2f}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
+            f"━━━━━━━━━━━━━━━━━━{bonus_line}\n"
             f"{'ជ្រើស ចំនួន:' if lang=='kh' else 'Choose Amount:'}",
             parse_mode="HTML", reply_markup=deposit_amt_kb(uid)); return
 
