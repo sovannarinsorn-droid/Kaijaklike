@@ -274,6 +274,7 @@ DEP_BONUS_FILE  = _dpath("smm_deposit_bonus.json")
 SUB_ADMIN_FILE  = _dpath("smm_sub_admins.json")
 SUPPORT_CFG_FILE= _dpath("smm_support.json")
 CAMRAPID_CFG_FILE= _dpath("smm_camrapid.json")
+BAKONG_CFG_FILE = _dpath("smm_bakong.json")
 EMOJI_FILE      = _dpath("smm_emoji.json")
 
 def _load(path, default):
@@ -406,6 +407,20 @@ lang_cooldown= {}
 # ═══════════════════════════════════════════════════════════
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 
+_BOT_USERNAME_CACHE = {"v": None}
+def _bot_username():
+    """យក username របស់ bot បច្ចុប្បន្ន (cache) — ត្រូវការសម្រាប់ clone bot នីមួយៗ
+    ដែលមាន username ខុសៗគ្នា (មិនអាច hardcode បានទេ)"""
+    if _BOT_USERNAME_CACHE["v"]:
+        return _BOT_USERNAME_CACHE["v"]
+    try:
+        _BOT_USERNAME_CACHE["v"] = bot.get_me().username
+    except Exception as e:
+        logger.warning(f"[bot_username] failed: {e}")
+        _BOT_USERNAME_CACHE["v"] = "KaiJakLikeBot"
+    return _BOT_USERNAME_CACHE["v"]
+
+
 # ── Premium emoji auto-injection — ជាមួយ AUTO-FALLBACK សុវត្ថិភាព ──────────
 # គ្រោះថ្នាក់ដែលត្រូវការពារ៖ បើ custom_emoji_id ណាមួយខូច/លែងមាន ឬ admin
 # (ADMIN_ID) លែងមាន Telegram Premium ទៀត Telegram server អាច **បដិសេធ
@@ -509,10 +524,15 @@ clone_registry = _load(CLONES_REGISTRY, {})   # name -> {token, admin_id, camrap
 sub_admins   = _load(SUB_ADMIN_FILE,   [])          # list of int UIDs
 support_cfg  = _load(SUPPORT_CFG_FILE, {"kh": "", "en": ""})   # custom support text per lang
 camrapid_cfg = _load(CAMRAPID_CFG_FILE, {"key": ""})            # live-editable API key
+bakong_cfg   = _load(BAKONG_CFG_FILE, {"token": ""})            # live-editable Bakong Developer Token
 
 def _effective_camrapid_key():
     """Return runtime key if set, else fall back to env/default"""
     return camrapid_cfg.get("key") or CAMRAPID_API_KEY
+
+def _effective_bakong_token():
+    """Return runtime Bakong token if set, else fall back to env/default"""
+    return bakong_cfg.get("token") or BAKONG_API_TOKEN
 
 def is_admin(uid):
     """True if uid is master admin OR sub-admin"""
@@ -1256,7 +1276,8 @@ def _bakong_deeplink(qr_str, uid=None):
     អ្នកប្រើគ្រាន់តែចុច button ម្តង App ធនាគាររបស់ខ្លួននឹងបើក ព្រមទាំង pre-fill ការទូទាត់។
     ត្រូវការ BAKONG_API_TOKEN (Bakong Developer Token) កំណត់ជា Environment Variable។
     """
-    if not BAKONG_API_TOKEN or not qr_str:
+    tok = _effective_bakong_token()
+    if not tok or not qr_str:
         return None
     try:
         r = http.post(
@@ -1265,12 +1286,12 @@ def _bakong_deeplink(qr_str, uid=None):
                 "qr": qr_str,
                 "sourceInfo": {
                     "appIconUrl": "https://raw.githubusercontent.com/sovannarinsorn-droid/assets/main/kairozen_logo.png",
-                    "appName": "KaiJakLike",
-                    "appDeepLinkCallback": "https://t.me/KaiJakLikeBot",
+                    "appName": BOT_DISPLAY_NAME or "KaiJakLike",
+                    "appDeepLinkCallback": f"https://t.me/{_bot_username()}",
                 },
             },
             headers={
-                "Authorization": f"Bearer {BAKONG_API_TOKEN}",
+                "Authorization": f"Bearer {tok}",
                 "Content-Type":  "application/json",
                 "Accept":        "application/json",
             },
@@ -1503,8 +1524,9 @@ def admin_kb():
     kb.row(KeyboardButton("✏️ កែ Support",      color="progress"),
            KeyboardButton("👥 Sub Admins",      color="progress"))
     kb.row(KeyboardButton("🔑 CamRapidPay Key", color="progress"),
-           KeyboardButton("📝 Welcome Msg",     color="progress"))
-    kb.row(KeyboardButton("😊 កំណត់ Emoji", color="progress"))
+           KeyboardButton("🏦 Bakong Deep Link", color="progress"))
+    kb.row(KeyboardButton("📝 Welcome Msg",     color="progress"),
+           KeyboardButton("😊 កំណត់ Emoji", color="progress"))
     return kb
 
 def emoji_menu_kb():
@@ -2594,6 +2616,37 @@ def cb_set_camrapid(call):
         except Exception as e:
             bot.send_message(uid, f"❌ Test failed: <code>{e}</code>",
                              parse_mode="HTML", reply_markup=admin_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("set_bakong:"))
+def cb_set_bakong(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: bot.answer_callback_query(call.id, "🚫"); return
+    action = call.data.split(":")[1]
+    bot.answer_callback_query(call.id)
+    if action == "edit":
+        waiting[uid] = "set_bakong_token"
+        bot.send_message(uid,
+            "🏦 <b>ផ្ញើ Bakong Developer Token ថ្មី:</b>\n"
+            "(យកពី https://bakong.nbc.gov.kh/developers)\n"
+            "ឬផ្ញើ <code>-</code> ដើម្បី reset ទៅ env/default",
+            parse_mode="HTML", reply_markup=cancel_kb())
+    elif action == "reset":
+        bakong_cfg["token"] = ""
+        _save(BAKONG_CFG_FILE, bakong_cfg)
+        bot.send_message(uid, "✅ Bakong Token reset ទៅ env/default!",
+                         parse_mode="HTML", reply_markup=admin_kb())
+    elif action == "test":
+        tok = _effective_bakong_token()
+        if not tok:
+            bot.send_message(uid, "⚠️ មិនទាន់កំណត់ Bakong Token ទេ!",
+                             parse_mode="HTML", reply_markup=admin_kb()); return
+        # KHQR ខ្សែសាកល្បង (generic Bakong test string) — គ្រាន់ត្រួតពិនិត្យថា token/API ដំណើរការ
+        test_dl = _bakong_deeplink("00020101021129180014A00000067701011201150096600123456789530384054031005802KH5910TEST MERCHANT6010PHNOM PENH62070503***6304ABCD", uid)
+        ok = bool(test_dl)
+        bot.send_message(uid,
+            f"{'✅' if ok else '❌'} <b>Bakong Deep Link Test</b>\n"
+            f"{'Deep link: <code>' + test_dl + '</code>' if ok else 'Token invalid ឬ API មិនឆ្លើយតប — ពិនិត្យ log'}",
+            parse_mode="HTML", reply_markup=admin_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("set_welcome:"))
 def cb_set_welcome(call):
@@ -3815,6 +3868,25 @@ def handle_msg(message):
                 f"Source: {'📁 runtime' if camrapid_cfg.get('key') else '⚙️ env/default'}",
                 parse_mode="HTML", reply_markup=kb2); return
 
+        if text == "🏦 Bakong Deep Link":
+            if uid != ADMIN_ID:
+                bot.send_message(uid, "🚫 Master Admin only!", reply_markup=sub_admin_kb()); return
+            cur = _effective_bakong_token()
+            masked = (cur[:8] + "..." + cur[-4:]) if len(cur) > 12 else (cur or "(មិនទាន់កំណត់)")
+            kb2 = InlineKeyboardMarkup()
+            kb2.add(InlineKeyboardButton("✏️ ប្តូរ Token ថ្មី", callback_data="set_bakong:edit", color="progress"))
+            kb2.add(InlineKeyboardButton("🧪 Test Token", callback_data="set_bakong:test", color="active"))
+            if bakong_cfg.get("token"):
+                kb2.add(InlineKeyboardButton("🗑️ Reset (env/default)", callback_data="set_bakong:reset", color="inactive"))
+            bot.send_message(uid,
+                f"🏦 <b>Bakong Developer Token</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"Token: <code>{masked}</code>\n"
+                f"Source: {'📁 runtime' if bakong_cfg.get('token') else '⚙️ env/default'}\n"
+                f"📌 ត្រូវការសម្រាប់ button បើក App ធនាគារស្វ័យប្រវត្តិ (ABA/ACLEDA/Bakong) នៅក្រោម QR ដាក់លុយ។\n"
+                f"យក Token ពី: https://bakong.nbc.gov.kh/developers",
+                parse_mode="HTML", reply_markup=kb2); return
+
         if text == "📝 Welcome Msg":
             if uid != ADMIN_ID:
                 bot.send_message(uid, "🚫 Master Admin only!", reply_markup=sub_admin_kb()); return
@@ -3889,6 +3961,25 @@ def handle_msg(message):
                 _save(CAMRAPID_CFG_FILE, camrapid_cfg)
                 masked = k[:8] + "..." + k[-4:]
                 bot.send_message(uid, f"✅ CamRapidPay Key ថ្មីបានរក្សា!\n🔑 <code>{masked}</code>",
+                                 parse_mode="HTML", reply_markup=admin_kb())
+            return
+
+        if step == "set_bakong_token":
+            waiting.pop(uid, None)
+            if text.strip() == "-":
+                bakong_cfg["token"] = ""
+                _save(BAKONG_CFG_FILE, bakong_cfg)
+                bot.send_message(uid, "✅ Bakong Token reset ទៅ env/default!",
+                                 reply_markup=admin_kb())
+            else:
+                k = text.strip()
+                if len(k) < 10:
+                    bot.send_message(uid, "❌ Token ខ្លីពេក!", reply_markup=admin_kb()); return
+                bakong_cfg["token"] = k
+                _save(BAKONG_CFG_FILE, bakong_cfg)
+                masked = k[:8] + "..." + k[-4:] if len(k) > 12 else k
+                bot.send_message(uid, f"✅ Bakong Token ថ្មីបានរក្សា!\n🏦 <code>{masked}</code>\n"
+                                       f"🔘 Button បើក App ធនាគារនឹងបង្ហាញលើក QR ថ្មីៗចាប់ពីនេះទៅ",
                                  parse_mode="HTML", reply_markup=admin_kb())
             return
 
