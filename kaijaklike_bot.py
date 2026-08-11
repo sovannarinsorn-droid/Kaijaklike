@@ -944,17 +944,18 @@ def _place_smm_order(uid, slug, qty, link):
 # ═══════════════════════════════════════════════════════════
 #  KHQR CARD GENERATOR  (Bakong-style branded card)
 # ═══════════════════════════════════════════════════════════
-_CARD_NAVY      = (13, 18, 38)
-_CARD_NAVY2     = (30, 27, 75)
-_CARD_RED       = (229, 29, 39)
+_CARD_NAVY      = (5, 59, 47)       # deep emerald (header / headline text)
+_CARD_NAVY2     = (3, 33, 30)       # deeper teal (header gradient bottom)
+_CARD_RED       = (217, 45, 32)
 _CARD_WHITE     = (255, 255, 255)
-_CARD_SUBTITLE  = (191, 196, 234)
-_CARD_GRAY      = (104, 110, 128)
-_CARD_MUTED     = (139, 140, 144)
-_CARD_BORDER    = (228, 229, 233)
-_CARD_GOLD      = (245, 197, 66)
-_CARD_VIOLET    = (124, 92, 255)
-_CARD_PANEL     = (250, 250, 252)
+_CARD_SUBTITLE  = (170, 221, 199)   # mint (header subtitle)
+_CARD_GRAY      = (100, 116, 109)
+_CARD_MUTED     = (145, 152, 148)
+_CARD_BORDER    = (224, 231, 227)
+_CARD_GOLD      = (201, 162, 39)
+_CARD_VIOLET    = (6, 95, 70)       # emerald accent (panel border / pill outline)
+_CARD_PANEL     = (247, 250, 249)
+_CARD_CHIP_BG   = (234, 250, 244)   # pale mint chip background
 
 _FONT_REG = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -1014,9 +1015,22 @@ def _qr_img(data, box_px):
                 draw.rectangle([x0, y0, x0 + mod - 1, y0 + mod - 1], fill=_CARD_NAVY)
     return img.resize((box_px, box_px), Image.LANCZOS)
 
+def _pill_box(draw, cx, y, text, font, pad_x, pad_y, fill, outline=None, outline_w=2,
+              text_fill=_CARD_NAVY):
+    """Draw a centered, auto-width rounded pill with text. Returns pill height."""
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw_, th_ = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pill_h = th_ + 2 * pad_y
+    pill_w = tw_ + 2 * pad_x
+    box = [cx - pill_w / 2, y, cx + pill_w / 2, y + pill_h]
+    draw.rounded_rectangle(box, radius=pill_h / 2, fill=fill,
+                            outline=outline, width=outline_w if outline else 0)
+    draw.text((cx - tw_ / 2 - bbox[0], y + pad_y - bbox[1]), text, font=font, fill=text_fill)
+    return pill_h
+
 def _build_qr_image(qr_string, amount=None, ref=None, label=None, subtitle=None,
                     expires_min=None, width=720):
-    """Generate branded KHQR card → BytesIO (PNG). Falls back to plain QR on error."""
+    """Generate branded KHQR 'ticket' card → BytesIO (PNG). Falls back to plain QR on error."""
     if expires_min is None:
         expires_min = max(1, round(DEPOSIT_EXPIRE_SEC / 60))
     try:
@@ -1039,100 +1053,126 @@ def _build_qr_image(qr_string, amount=None, ref=None, label=None, subtitle=None,
         qr_card_bottom = qr_card_top + QR_BOX
         content_top    = qr_card_bottom + int(W * 0.05)
 
-        amt_h = int(f_amt.size * 1.5)
-        gap1, gap2 = int(W * 0.022), int(W * 0.035)
-        bottom_pad = int(W * 0.05)
+        # Row heights (shared between H calc and the draw walk, kept in sync)
+        NAME_ROW  = int(W * 0.065)
+        SUB_ROW   = int(W * 0.045)
+        GAP1      = int(W * 0.020)
+        AMT_H     = int(f_amt.size * 1.55)
+        GAP2      = int(W * 0.030)
+        PERF_ROW  = int(W * 0.045)
+        CHIP_H    = int(f_small.size * 1.9)
+        CHIP_GAP  = int(W * 0.022)
+        EXP_ROW   = int(W * 0.032)
+        FOOT_ROW1 = int(W * 0.030)
+        FOOT_ROW2 = int(W * 0.030)
+        BOTTOM_PAD = int(W * 0.05)
 
-        H = (content_top
-             + int(W * 0.065)
-             + int(W * 0.04)
-             + gap1 + amt_h + gap2
-             + int(W * 0.03) * 4
-             + bottom_pad)
+        H = (content_top + NAME_ROW + SUB_ROW + GAP1 + AMT_H + GAP2 + PERF_ROW
+             + CHIP_H + CHIP_GAP + EXP_ROW + FOOT_ROW1 + FOOT_ROW2 + BOTTOM_PAD)
 
         img  = Image.new("RGB", (W, H), _CARD_WHITE)
         draw = ImageDraw.Draw(img)
         cx   = W // 2
         pad  = int(W * 0.06)
 
-        # 1. Gradient header
+        # 1. Gradient header (deep emerald → teal)
         _vgrad(draw, [0, 0, W, HEADER_H], _CARD_NAVY, _CARD_NAVY2)
 
-        # Decorative ring
-        ring_r = int(W * 0.32)
-        ring_cx, ring_cy = W - int(W * 0.05), int(W * 0.02)
-        draw.ellipse([ring_cx - ring_r, ring_cy - ring_r, ring_cx + ring_r, ring_cy + ring_r],
-                     outline=(255, 255, 255), width=1)
+        # Decorative rings — kept fully inside the header so no stray arcs bleed
+        # into the body below (the previous ring's radius overshot HEADER_H)
+        for rr, rw in ((int(W*0.16), 1), (int(W*0.10), 1)):
+            ring_cx, ring_cy = W - int(W * 0.04), int(W * 0.045)
+            draw.ellipse([ring_cx - rr, ring_cy - rr, ring_cx + rr, ring_cy + rr],
+                         outline=(24, 84, 68), width=rw)
 
         draw.text((pad, int(W * 0.045)), "KHQR", font=f_title, fill=_CARD_WHITE)
         draw.text((pad, int(W * 0.045) + f_title.size + int(W * 0.010)),
                   "Cambodian QR Payment · Bakong", font=f_sub, fill=_CARD_SUBTITLE)
+        rule_y = int(W * 0.045) + f_title.size + int(W * 0.010) + f_sub.size + int(W * 0.018)
+        draw.line([(pad, rule_y), (pad + int(W * 0.14), rule_y)], fill=_CARD_GOLD, width=2)
 
-        # Gold badge
-        badge_txt = "★ PREMIUM"
+        # Gold "verified" badge
+        badge_txt = "✓ VERIFIED"
         bw = _tw(draw, badge_txt, f_badge)
         bpad_x, bpad_y = int(W * 0.020), int(W * 0.011)
         bx1 = W - pad
         bx0 = bx1 - bw - bpad_x * 2
         by0 = int(W * 0.045)
         by1 = by0 + f_badge.size + bpad_y * 2
+        shadow_d = max(2, int(W * 0.006))
+        draw.rounded_rectangle([bx0+shadow_d, by0+shadow_d, bx1+shadow_d, by1+shadow_d],
+                                radius=(by1 - by0) // 2, fill=(2, 20, 16))
         draw.rounded_rectangle([bx0, by0, bx1, by1], radius=(by1 - by0) // 2, fill=_CARD_GOLD)
         draw.text((bx0 + bpad_x, by0 + bpad_y - int(W * 0.003)), badge_txt, font=f_badge, fill=_CARD_NAVY)
 
-        # 2. Floating QR panel
+        # 2. Floating QR panel — thin gold border + emerald corner dots (instead of brackets)
         r = int(W * 0.045)
         panel_box = [SIDE_PAD, qr_card_top, SIDE_PAD + QR_BOX, qr_card_bottom]
         shadow_off = int(W * 0.012)
         draw.rounded_rectangle(
             [panel_box[0] + shadow_off, panel_box[1] + shadow_off,
              panel_box[2] + shadow_off, panel_box[3] + shadow_off],
-            radius=r, fill=(225, 227, 235))
-        draw.rounded_rectangle(panel_box, radius=r, fill=_CARD_WHITE)
+            radius=r, fill=(222, 230, 226))
+        draw.rounded_rectangle(panel_box, radius=r, fill=_CARD_WHITE,
+                                outline=_CARD_GOLD, width=3)
 
         qr_px  = QR_BOX - 2 * QR_PAD
         qr_pil = _qr_img(qr_string, qr_px)
         img.paste(qr_pil, (SIDE_PAD + QR_PAD, qr_card_top + QR_PAD))
 
-        # Violet corner brackets
-        bl = int(W * 0.055)
-        bt = max(3, int(W * 0.007))
-        bo = int(W * 0.018)
+        # Small emerald corner dots — pushed fully past the rounded-corner arc
+        # (r) so they render as clean circles instead of being clipped by it
+        dot_r = max(3, int(W * 0.007))
+        do = r + int(W * 0.012)
         x0, y0, x1, y1 = panel_box
-        corners = [
-            ((x0+bo, y0+bo+bl), (x0+bo, y0+bo), (x0+bo+bl, y0+bo)),
-            ((x1-bo-bl, y0+bo), (x1-bo, y0+bo), (x1-bo, y0+bo+bl)),
-            ((x0+bo, y1-bo-bl), (x0+bo, y1-bo), (x0+bo+bl, y1-bo)),
-            ((x1-bo-bl, y1-bo), (x1-bo, y1-bo), (x1-bo, y1-bo-bl)),
-        ]
-        for pts in corners:
-            draw.line(pts, fill=_CARD_VIOLET, width=bt, joint="curve")
+        for dx, dy in [(x0+do, y0+do), (x1-do, y0+do), (x0+do, y1-do), (x1-do, y1-do)]:
+            draw.ellipse([dx-dot_r, dy-dot_r, dx+dot_r, dy+dot_r], fill=_CARD_VIOLET)
 
         # 3. Store name + subtitle
         y = content_top
         _cx_text(draw, cx, y, label or "Kaijaklike", f_name, _CARD_NAVY)
-        y += int(W * 0.065)
+        y += NAME_ROW
         _cx_text(draw, cx, y, subtitle or "SMM Panel Deposit", f_label, _CARD_GRAY)
-        y += int(W * 0.04) + gap1
+        y += SUB_ROW + GAP1
 
-        # 4. Amount banner
+        # 4. Amount — gold-bordered floating pill (not a full-width banner)
         if amount is not None:
             amt_str = f"${float(amount):.2f}"
-            banner_box = [pad, y, W - pad, y + amt_h]
-            draw.rounded_rectangle(banner_box, radius=int(W * 0.02), fill=(243, 241, 255))
-            draw.rounded_rectangle(banner_box, radius=int(W * 0.02), outline=_CARD_VIOLET, width=2)
-            _cx_text(draw, cx, y + (amt_h - f_amt.size) // 2 - int(W * 0.010),
-                     amt_str, f_amt, _CARD_NAVY2)
-            y += amt_h + gap2
+            pad_x = int(W * 0.045)
+            pad_y = (AMT_H - f_amt.size) // 2
+            _pill_box(draw, cx, y, amt_str, f_amt, pad_x, pad_y,
+                      fill=_CARD_CHIP_BG, outline=_CARD_GOLD, outline_w=3,
+                      text_fill=_CARD_NAVY)
+        y += AMT_H + GAP2
 
-        # 5. Ref / expiry / footer
+        # 5. Ticket perforation — dashed tear line with two gold end-dots
+        perf_y = y + PERF_ROW // 2
+        dash_w, dash_gap = int(W * 0.018), int(W * 0.012)
+        dx = pad + int(W * 0.03)
+        while dx < W - pad - int(W * 0.03):
+            draw.line([(dx, perf_y), (min(dx + dash_w, W - pad - int(W*0.03)), perf_y)],
+                      fill=_CARD_BORDER, width=2)
+            dx += dash_w + dash_gap
+        end_r = max(3, int(W * 0.008))
+        draw.ellipse([pad-end_r, perf_y-end_r, pad+end_r, perf_y+end_r], fill=_CARD_GOLD)
+        draw.ellipse([W-pad-end_r, perf_y-end_r, W-pad+end_r, perf_y+end_r], fill=_CARD_GOLD)
+        y += PERF_ROW
+
+        # 6. Ref chip
         if ref:
-            _cx_text(draw, cx, y, f"Ref: {ref}", f_small, _CARD_MUTED)
-            y += int(W * 0.03)
+            _pill_box(draw, cx, y, f"Ref: {ref}", f_small,
+                      int(W * 0.03), int(f_small.size * 0.45),
+                      fill=_CARD_CHIP_BG, text_fill=_CARD_GRAY)
+        y += CHIP_H + CHIP_GAP
+
+        # 7. Expiry (red, plain — draws the eye without another box)
         if expires_min:
             _cx_text(draw, cx, y, f"Expires in {expires_min} minutes", f_small, _CARD_RED)
-            y += int(W * 0.03)
+        y += EXP_ROW
+
+        # 8. Footer
         _cx_text(draw, cx, y, "Scan with any Bakong-member app", f_small, _CARD_MUTED)
-        y += int(W * 0.03)
+        y += FOOT_ROW1
         _cx_text(draw, cx, y, "ABA · ACLEDA · Wing", f_small, _CARD_MUTED)
 
         buf = io.BytesIO()
@@ -1147,7 +1187,7 @@ def _build_qr_image(qr_string, amount=None, ref=None, label=None, subtitle=None,
             qr = _qrc.QRCode(box_size=8, border=2,
                              error_correction=_qrc.constants.ERROR_CORRECT_M)
             qr.add_data(qr_string); qr.make(fit=True)
-            pil = qr.make_image(fill_color=(10, 34, 64), back_color="white").convert("RGB")
+            pil = qr.make_image(fill_color=(5, 59, 47), back_color="white").convert("RGB")
             buf = io.BytesIO(); pil.save(buf, format="PNG")
             buf.seek(0); buf.name = "khqr.png"
             return buf
