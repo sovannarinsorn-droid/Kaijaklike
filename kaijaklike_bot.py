@@ -212,6 +212,10 @@ CAMRAPID_CREATE    = "https://pay.camrapidpay.com/api/v1/khqr/create-payments"
 CAMRAPID_CHECK     = "https://pay.camrapidpay.com/check-transaction-api"
 WEBHOOK_URL        = os.getenv("WEBHOOK_URL", "")          # ដាក់ URL webhook (optional)
 
+# ── Bakong Open API — Generate Deep Link (បើក App ធនាគារស្វ័យប្រវត្តិ៖ ABA / ACLEDA / Bakong / Wing ...) ──
+BAKONG_API_TOKEN    = os.getenv("BAKONG_API_TOKEN", "")   # 👈 Bakong Developer Token ពី https://bakong.nbc.gov.kh/developers — កំណត់ជា Environment Variable
+BAKONG_DEEPLINK_API = "https://api-bakong.nbc.gov.kh/v1/generate_deeplink_by_qr"
+
 DEPOSIT_EXPIRE_SEC = 300   # 5 minutes (CamRapidPay expire 5 min)
 POLL_INTERVAL      = 8
 
@@ -1245,6 +1249,44 @@ def _camrapid_check(reference) -> bool:
         logger.error(f"[camrapid_check] {e}")
         return False
 
+def _bakong_deeplink(qr_str, uid=None):
+    """
+    ហៅ Bakong Open API (NBC) ដើម្បីបំលែង KHQR string → Deep Link មួយ
+    ដែលបើក App ធនាគារបានស្វ័យប្រវត្តិ (ABA, ACLEDA, Bakong, Wing, Chip Mong ...) —
+    អ្នកប្រើគ្រាន់តែចុច button ម្តង App ធនាគាររបស់ខ្លួននឹងបើក ព្រមទាំង pre-fill ការទូទាត់។
+    ត្រូវការ BAKONG_API_TOKEN (Bakong Developer Token) កំណត់ជា Environment Variable។
+    """
+    if not BAKONG_API_TOKEN or not qr_str:
+        return None
+    try:
+        r = http.post(
+            BAKONG_DEEPLINK_API,
+            json={
+                "qr": qr_str,
+                "sourceInfo": {
+                    "appIconUrl": "https://raw.githubusercontent.com/sovannarinsorn-droid/assets/main/kairozen_logo.png",
+                    "appName": "KaiJakLike",
+                    "appDeepLinkCallback": "https://t.me/KaiJakLikeBot",
+                },
+            },
+            headers={
+                "Authorization": f"Bearer {BAKONG_API_TOKEN}",
+                "Content-Type":  "application/json",
+                "Accept":        "application/json",
+            },
+            timeout=10,
+        )
+        data = r.json()
+        logger.info(f"[bakong_deeplink] uid={uid} HTTP={r.status_code} resp={data}")
+        if data.get("responseCode") == 0:
+            d = data.get("data") or {}
+            return d.get("shortLink") or d.get("deeplink") or d.get("dl")
+        logger.warning(f"[bakong_deeplink] failed: {data}")
+        return None
+    except Exception as e:
+        logger.warning(f"[bakong_deeplink] exception: {e}")
+        return None
+
 def _watch_deposit(uid, uid_str, dep_id, amount, reference):
     """Poll CamRapidPay until paid or expired (5 min)"""
     deadline = time.time() + DEPOSIT_EXPIRE_SEC + 30
@@ -1360,14 +1402,21 @@ def _send_deposit_qr(uid, amount, promo_code=None, label="💸 ដាក់ល�
             subtitle="SMM Panel Deposit · ដាក់លុយ",
         )
 
+    # ── Deep Link button ចូល App ធនាគារស្វ័យប្រវត្តិ (ABA / ACLEDA / Bakong / Wing ...) ──
+    kb_pay = None
+    dlink  = _bakong_deeplink(qr_str, uid) if qr_str else None
+    if dlink:
+        kb_pay = InlineKeyboardMarkup()
+        kb_pay.add(InlineKeyboardButton("🏦 ស្កេន QR ឬ ចុចបើក App ធនាគារ", url=dlink, color="active"))
+
     if img_buf:
         try:
-            bot.send_photo(uid, img_buf, caption=cap, parse_mode="HTML")
+            bot.send_photo(uid, img_buf, caption=cap, parse_mode="HTML", reply_markup=kb_pay)
         except Exception as e:
             logger.warning(f"[deposit_qr] send_photo failed: {e}")
-            bot.send_message(uid, cap, parse_mode="HTML")
+            bot.send_message(uid, cap, parse_mode="HTML", reply_markup=kb_pay)
     else:
-        bot.send_message(uid, cap, parse_mode="HTML")
+        bot.send_message(uid, cap, parse_mode="HTML", reply_markup=kb_pay)
 
     threading.Thread(target=_watch_deposit,
                      args=(uid, uid_str, dep_id, amount, reference), daemon=True).start()
