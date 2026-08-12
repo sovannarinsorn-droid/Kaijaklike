@@ -318,56 +318,56 @@ dep_bonus_cfg = _load(DEP_BONUS_FILE, {"enabled": True, "min_amount": 1.0, "pct"
 _TIKTOK_PACKAGES = [
     {
         "slug":        "manual_tiktok_promote_p1",
-        "label":       "🇰🇭 500-1k ❤️ · 1.8k 👁 View",
-        "description": "500-1K Likes ❤️ + 1.8K Views 👁\n⏱ 5-15 នាទី",
+        "label":       "🇰🇭 ❤️ 500-1K + 👁️ 1.8K Views",
+        "description": "❤️ 500-1K Likes + 👁️ 1.8K Views\n⏱ 5-15 នាទី",
         "flat_price":  0.99,
     },
     {
         "slug":        "manual_tiktok_promote_p2",
-        "label":       "🇰🇭 1k-2k ❤️ · 3.5k 👁 View",
-        "description": "1K-2K Likes ❤️ + 3.5K Views 👁\n⏱ 5-15 នាទី",
+        "label":       "🇰🇭 ❤️ 1K-2K + 👁️ 3.5K Views",
+        "description": "❤️ 1K-2K Likes + 👁️ 3.5K Views\n⏱ 5-15 នាទី",
         "flat_price":  1.99,
     },
     {
         "slug":        "manual_tiktok_promote_p3",
-        "label":       "🇰🇭 2k-3k ❤️ · 10k 👁 View",
-        "description": "2K-3K Likes ❤️ + 10K Views 👁\n⏱ 10-20 នាទី",
+        "label":       "🇰🇭 ❤️ 2K-3K + 👁️ 10K Views",
+        "description": "❤️ 2K-3K Likes + 👁️ 10K Views\n⏱ 10-20 នាទី",
         "flat_price":  3.25,
     },
     {
         "slug":        "manual_tiktok_promote_p4",
-        "label":       "🇰🇭 3k-5k ❤️ · 20k 👁 View",
-        "description": "3K-5K Likes ❤️ + 20K Views 👁\n⏱ 15-30 នាទី",
+        "label":       "🇰🇭 ❤️ 3K-5K + 👁️ 20K Views",
+        "description": "❤️ 3K-5K Likes + 👁️ 20K Views\n⏱ 15-30 នាទី",
         "flat_price":  5.49,
     },
     {
         "slug":        "manual_tiktok_promote_p5",
-        "label":       "🇰🇭 500 ❤️ · 1k 👁 · 100 👤 Follow",
-        "description": "500 Likes ❤️ + 1K Views 👁 + 100 Followers 👤\n⏱ 5-15 នាទី",
+        "label":       "🇰🇭 ❤️ 500 + 👁️ 1K + 👤 100",
+        "description": "❤️ 500 Likes + 👁️ 1K Views + 👤 100 Followers\n⏱ 5-15 នាទី",
         "flat_price":  1.99,
     },
     {
         "slug":        "manual_tiktok_promote_view1",
-        "label":       "🇰🇭 2k-5k 👁 View",
-        "description": "2K-5K Views 👁 (View ណាមួយ)\n⏱ 5-15 នាទី",
+        "label":       "🇰🇭 👁️ 2K-5K Views",
+        "description": "👁️ 2K-5K Views (Video ណាមួយ)\n⏱ 5-15 នាទី",
         "flat_price":  0.99,
     },
     {
         "slug":        "manual_tiktok_promote_view2",
-        "label":       "🇰🇭 5k-10k 👁 View",
-        "description": "5K-10K Views 👁 (View ណាមួយ)\n⏱ 5-15 នាទី",
+        "label":       "🇰🇭 👁️ 5K-10K Views",
+        "description": "👁️ 5K-10K Views (Video ណាមួយ)\n⏱ 5-15 នាទី",
         "flat_price":  1.99,
     },
     {
         "slug":        "manual_tiktok_promote_follow1",
-        "label":       "🇰🇭 100-200 👤 Follow",
-        "description": "100-200 Followers 👤\n⏱ 10-20 នាទី",
+        "label":       "🇰🇭 👤 100-200 Followers",
+        "description": "👤 100-200 Followers\n⏱ 10-20 នាទី",
         "flat_price":  0.99,
     },
     {
         "slug":        "manual_tiktok_promote_follow2",
-        "label":       "🇰🇭 300-500 👤 Follow",
-        "description": "300-500 Followers 👤\n⏱ 10-20 នាទី",
+        "label":       "🇰🇭 👤 300-500 Followers",
+        "description": "👤 300-500 Followers\n⏱ 10-20 នាទី",
         "flat_price":  1.99,
     },
 ]
@@ -388,6 +388,26 @@ for _pkg in _TIKTOK_PACKAGES:
             "description": _pkg["description"],
         }
         _changed = True
+    else:
+        # ✨ Migration (2026-08-12): រៀបចំ label/description ចាស់ឲ្យស្អាត
+        # ស្របគ្នា (icon នៅមុខលេខជានិច្ច, 👁️ មាន VS16 ត្រឹមត្រូវ, K លាកតួពេញ)
+        # — ធ្វើតែម្តងគត់ ដោយប្រៀបធៀបនឹង label ចាស់ជាក់លាក់ដែលធ្លាប់ seed ស្រាប់,
+        # មិនប៉ះពាល់ admin ដែលធ្លាប់កែ label ដោយខ្លួនឯងរួចហើយទេ
+        _old_labels = {
+            "manual_tiktok_promote_p1":      "🇰🇭 500-1k ❤️ · 1.8k 👁 View",
+            "manual_tiktok_promote_p2":      "🇰🇭 1k-2k ❤️ · 3.5k 👁 View",
+            "manual_tiktok_promote_p3":      "🇰🇭 2k-3k ❤️ · 10k 👁 View",
+            "manual_tiktok_promote_p4":      "🇰🇭 3k-5k ❤️ · 20k 👁 View",
+            "manual_tiktok_promote_p5":      "🇰🇭 500 ❤️ · 1k 👁 · 100 👤 Follow",
+            "manual_tiktok_promote_view1":   "🇰🇭 2k-5k 👁 View",
+            "manual_tiktok_promote_view2":   "🇰🇭 5k-10k 👁 View",
+            "manual_tiktok_promote_follow1": "🇰🇭 100-200 👤 Follow",
+            "manual_tiktok_promote_follow2": "🇰🇭 300-500 👤 Follow",
+        }
+        if smm_services[_slug].get("label") == _old_labels.get(_slug):
+            smm_services[_slug]["label"]       = _pkg["label"]
+            smm_services[_slug]["description"] = _pkg["description"]
+            _changed = True
 if _changed:
     _save(SMM_SVC_FILE, smm_services)
 
@@ -1587,6 +1607,11 @@ def smm_cat_kb():
     cats = _smm_get_categories()
     btns = []
     for cat in cats:
+        # បើ cat ចាប់ផ្តើមដោយ emoji ស្រាប់ (ឧ. "🇰🇭 TikTok Khmer") កុំបន្ថែម icon
+        # ថ្មីទៀត — ការពារ icon ស្ទួន (ឧ. 🇰🇭🇰🇭) ដែលធ្លាប់កើតឡើងពីមុន
+        if _leading_emoji(cat):
+            btns.append([InlineKeyboardButton(cat, callback_data=f"smmcat:{cat}", color="active")])
+            continue
         icon = "📱"
         for key, ico in PLATFORM_ICONS.items():
             if key in cat.lower(): icon = ico; break
@@ -1604,6 +1629,11 @@ def smm_svc_kb(cat):
     btns = []
     for slug, s in svcs:
         label = s.get("label", slug)
+        # បើ label ចាប់ផ្តើមដោយ emoji ស្រាប់ (ឧ. "🇰🇭 ❤️ 500-1K...") កុំបន្ថែម
+        # icon ថ្មីទៀត — ការពារ icon ស្ទួន (ឧ. 👁️👁️) ដែលធ្លាប់កើតឡើងពីមុន
+        if _leading_emoji(label):
+            btns.append([InlineKeyboardButton(label, callback_data=f"smmsvc:{slug}", color="active")])
+            continue
         icon = "⚡"
         for key, ico in SVC_ICONS.items():
             if key in label.lower(): icon = ico; break
@@ -2737,7 +2767,22 @@ def handle_photo(message):
                     f"❌ រកមិនឃើញ premium emoji ក្នុងសារនោះទេ។ ផ្ញើ Premium version របស់ {ch} ម្តងទៀត ឬ ✕ Cancel។",
                     parse_mode="HTML", reply_markup=cancel_kb())
                 return
-            match_eid = next((eid for c, eid in found if c == ch), found[0][1])
+            exact = [eid for c, eid in found if c == ch]
+            if not exact:
+                # ⚠️ គ្មាន underlying char ណាដូច ch ដែលកំពុងកំណត់ទេ — កុំទាយ/ចាប់ខុស
+                # (មុននេះ code ចាប់យក found[0] ដោយស្វ័យប្រវត្តិ ធ្វើឲ្យ emoji ខុសទំនង
+                # ត្រូវបានផ្គូផ្គងទៅ ch ខុស — បង្ករ icon ស្ទួន/ខុសទីតាំងលើ button)
+                detected = ", ".join(f"{c}" for c, _ in found)
+                bot.send_message(uid,
+                    f"⚠️ <b>Emoji មិនត្រូវគ្នា!</b>\n"
+                    f"កំពុងកំណត់: {ch}\n"
+                    f"ប៉ុន្តែសារនេះមាន: {detected}\n\n"
+                    f"សូមប្រាកដថា premium emoji ដែលអ្នកផ្ញើ គឺជា <b>version premium របស់ {ch}</b> ពិតប្រាកដ "
+                    f"(តាមធម្មតា ត្រូវជ្រើសរើសពី emoji picker ដោយវាយ {ch} រួចចុច premium skin — "
+                    f"កុំចម្លង/forward emoji ផ្សេង)។ ផ្ញើម្តងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+                return
+            match_eid = exact[0]
             EMOJI_MAP[ch] = match_eid
             _save(EMOJI_FILE, EMOJI_MAP)
             waiting.pop(uid, None)
@@ -2843,8 +2888,21 @@ def handle_msg(message):
                     f"❌ រកមិនឃើញ premium emoji ក្នុងសារនោះទេ។ ផ្ញើ Premium version របស់ {ch} ម្តងទៀត ឬ ✕ Cancel។",
                     parse_mode="HTML", reply_markup=cancel_kb())
                 return  # stay in loop, waiting untouched
-            # prefer an exact match to the picked character; otherwise take the first found
-            match_eid = next((eid for c, eid in found if c == ch), found[0][1])
+            # ត្រូវការ exact match ទៅនឹង underlying char របស់ ch ដែលកំពុងកំណត់ —
+            # កុំចាប់យក emoji ដំបូងគេប្រសិនបើមិនត្រូវគ្នា (ធ្លាប់បង្កើត mismatch)
+            exact = [eid for c, eid in found if c == ch]
+            if not exact:
+                detected = ", ".join(f"{c}" for c, _ in found)
+                bot.send_message(uid,
+                    f"⚠️ <b>Emoji មិនត្រូវគ្នា!</b>\n"
+                    f"កំពុងកំណត់: {ch}\n"
+                    f"ប៉ុន្តែសារនេះមាន: {detected}\n\n"
+                    f"សូមប្រាកដថា premium emoji ដែលអ្នកផ្ញើ គឺជា <b>version premium របស់ {ch}</b> ពិតប្រាកដ "
+                    f"(តាមធម្មតា ត្រូវជ្រើសរើសពី emoji picker ដោយវាយ {ch} រួចចុច premium skin — "
+                    f"កុំចម្លង/forward emoji ផ្សេង)។ ផ្ញើម្តងទៀត ឬ ✕ Cancel។",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+                return
+            match_eid = exact[0]
             EMOJI_MAP[ch] = match_eid
             _save(EMOJI_FILE, EMOJI_MAP)
             waiting.pop(uid, None)
