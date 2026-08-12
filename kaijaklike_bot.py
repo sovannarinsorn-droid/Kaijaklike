@@ -798,6 +798,90 @@ def _smm_get_categories():
 def _smm_get_svcs_in_cat(cat):
     return [(slug, s) for slug, s in smm_services.items() if s.get("category") == cat]
 
+# ── Link validation (កុំឲ្យ user ដាក់ Link ខុស Platform) ───────────────
+_URL_RE = _re.compile(r"^https?://[^\s/$.?#].[^\s]*$", _re.IGNORECASE)
+
+# ✏️ Platform ស្ដង់ដារ — key ត្រូវបានរក្សាទុកផ្ទាល់ក្នុង Service ("platform" field)
+# ដើម្បីសម្គាល់ Link ដោយច្បាស់លាស់តាមកម្មវិធីនីមួយៗ (មិនទាមទារ guess ពី category ទៀត)
+_PLATFORM_CHOICES = [
+    ("tiktok",    "🎵 TikTok",     ("tiktok.com",)),
+    ("facebook",  "📘 Facebook",   ("facebook.com", "fb.com", "fb.watch")),
+    ("instagram", "📸 Instagram",  ("instagram.com", "instagr.am")),
+    ("youtube",   "▶️ YouTube",    ("youtube.com", "youtu.be")),
+    ("telegram",  "📱 Telegram",   ("t.me", "telegram.me", "telegram.org")),
+    ("twitter",   "🐦 Twitter/X",  ("twitter.com", "x.com")),
+    ("threads",   "🧵 Threads",    ("threads.net",)),
+    ("other",     "🔓 ផ្សេង (មិនកំណត់ Domain)", None),
+]
+_PLATFORM_DOMAINS_BY_KEY = {k: d for k, _label, d in _PLATFORM_CHOICES}
+_PLATFORM_LABEL_BY_KEY   = {k: lbl for k, lbl, _d in _PLATFORM_CHOICES}
+# Category preset (buttons ចាស់) → platform key ស្វ័យប្រវត្តិ (មិនចាំបាច់សួរម្ដងទៀត)
+_CAT_TO_PLATFORM_KEY = {
+    "TikTok": "tiktok", "🇰🇭 TikTok Khmer": "tiktok",
+    "Facebook": "facebook", "Instagram": "instagram", "YouTube": "youtube",
+    "Telegram": "telegram", "Twitter": "twitter",
+}
+# keyword ស្វែងរកនៅក្នុង slug/category/label (fallback សម្រាប់ Service ចាស់ៗ
+# ដែលមិនទាន់មាន "platform" field ជាក់លាក់)
+_PLATFORM_DOMAINS = [
+    (("tiktok",),                 _PLATFORM_DOMAINS_BY_KEY["tiktok"]),
+    (("facebook", "fb "),          _PLATFORM_DOMAINS_BY_KEY["facebook"]),
+    (("instagram", " ig ", "insta"), _PLATFORM_DOMAINS_BY_KEY["instagram"]),
+    (("youtube", " yt "),          _PLATFORM_DOMAINS_BY_KEY["youtube"]),
+    (("telegram", " tg "),         _PLATFORM_DOMAINS_BY_KEY["telegram"]),
+    (("twitter", " x "),           _PLATFORM_DOMAINS_BY_KEY["twitter"]),
+    (("threads",),                 _PLATFORM_DOMAINS_BY_KEY["threads"]),
+]
+
+def _platform_pick_kb(prefix):
+    """ស្ថាបនា Inline Keyboard ជ្រើសរើស Platform (2 columns) សម្រាប់ prefix ដែលបញ្ជាក់"""
+    kb = InlineKeyboardMarkup()
+    row = []
+    for key, label, _d in _PLATFORM_CHOICES:
+        row.append(InlineKeyboardButton(label, callback_data=f"{prefix}:{key}",
+                                         color=("inactive" if key == "other" else "active")))
+        if len(row) == 2:
+            kb.row(*row); row = []
+    if row: kb.row(*row)
+    return kb
+
+def _detect_platform_domains(slug, s):
+    """រកឈ្មោះ Platform ដែលរំពឹងទុក៖ ប្រើ "platform" field ជាក់លាក់ជាមុនសិន
+    (កំណត់ដោយ Admin ពេលបង្កើត Service), បើគ្មាន ត្រឡប់ទៅ guess ពី category/label ចាស់វិញ។"""
+    platform = s.get("platform")
+    if platform:
+        return _PLATFORM_DOMAINS_BY_KEY.get(platform)
+    cat = s.get("category", "")
+    if cat in _CAT_TO_PLATFORM_KEY:
+        return _PLATFORM_DOMAINS_BY_KEY.get(_CAT_TO_PLATFORM_KEY[cat])
+    hay = f" {slug} {cat} {s.get('label','')} ".lower()
+    for keywords, domains in _PLATFORM_DOMAINS:
+        for kw in keywords:
+            if kw.strip() in hay:
+                return domains
+    return None
+
+def _validate_order_link(link, slug, s):
+    """ត្រឡប់ (True, None) បើ Link ត្រឹមត្រូវ, ឬ (False, error_msg) បើខុស។"""
+    link = (link or "").strip()
+    if not link or " " in link or not _URL_RE.match(link):
+        return False, (
+            "❌ <b>Link មិនត្រឹមត្រូវ!</b>\n"
+            "សូមផ្ញើ Link ដែលចាប់ផ្ដើមដោយ <code>http://</code> ឬ <code>https://</code> "
+            "ដោយគ្មានចន្លោះ (space) ។"
+        )
+    domains = _detect_platform_domains(slug, s)
+    if domains:
+        netloc = link.split("://", 1)[-1].split("/", 1)[0].lower()
+        if not any(netloc == d or netloc.endswith("." + d) for d in domains):
+            expected = " / ".join(domains)
+            return False, (
+                f"❌ <b>Link មិនត្រូវនឹង Service នេះទេ!</b>\n"
+                f"Service នេះទាមទារ Link ពី <b>{expected}</b>\n"
+                f"សូមពិនិត្យ Link ឡើងវិញ ហើយផ្ញើម្ដងទៀត។"
+            )
+    return True, None
+
 def _auto_dep_bonus(amount):
     """ត្រឡប់ Bonus ស្វ័យប្រវត្តិ (USD) សម្រាប់ចំនួនប្រាក់ដែលដាក់ — 0 បើមិនចូលលក្ខខណ្ឌ។"""
     try:
@@ -2198,6 +2282,25 @@ def cb_mansvc_cat(call):
             f"ឧ: <code>1.20</code> = $1.20 per 1K",
             parse_mode="HTML", reply_markup=cancel_kb())
 
+@bot.callback_query_handler(func=lambda c: c.data.startswith("mansvcplat:"))
+def cb_mansvcplat(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: bot.answer_callback_query(call.id); return
+    key = call.data[len("mansvcplat:"):]
+    bot.answer_callback_query(call.id)
+    step = waiting.get(uid, {})
+    if not isinstance(step, dict): return
+    waiting[uid] = {"step": "manual_svc_price", "label": step.get("label",""),
+                     "cat": step.get("cat",""), "platform": key}
+    plabel = _PLATFORM_LABEL_BY_KEY.get(key, key)
+    bot.send_message(uid,
+        f"💰 <b>ដាក់តម្លៃ (USD per 1000)</b>\n"
+        f"🌐 Platform: <b>{plabel}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"ឧ: <code>0.50</code> = $0.50 per 1K\n"
+        f"ឧ: <code>1.20</code> = $1.20 per 1K",
+        parse_mode="HTML", reply_markup=cancel_kb())
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pkgcat:"))
 def cb_pkgcat(call):
     """Admin: choose category for a new flat-price Package"""
@@ -2221,6 +2324,25 @@ def cb_pkgcat(call):
             f"ឧ: <code>1K-2K Likes ❤️ + 3.5K Views 👁</code>\n"
             f"ឬ វាយ <code>-</code> ដើម្បីរំលង",
             parse_mode="HTML", reply_markup=cancel_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("pkgplat:"))
+def cb_pkgplat(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: bot.answer_callback_query(call.id); return
+    key = call.data[len("pkgplat:"):]
+    bot.answer_callback_query(call.id)
+    step = waiting.get(uid, {})
+    if not isinstance(step, dict): return
+    waiting[uid] = {"step": "pkg_desc", "label": step.get("label",""),
+                     "cat": step.get("cat",""), "platform": key}
+    plabel = _PLATFORM_LABEL_BY_KEY.get(key, key)
+    bot.send_message(uid,
+        f"🌐 Platform: <b>{plabel}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📝 <b>ការពិពណ៌នា Package (Description)</b>\n"
+        f"ឧ: <code>1K-2K Likes ❤️ + 3.5K Views 👁</code>\n"
+        f"ឬ វាយ <code>-</code> ដើម្បីរំលង",
+        parse_mode="HTML", reply_markup=cancel_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("editprice:"))
 def cb_editprice(call):
@@ -2303,15 +2425,57 @@ def cb_editsvc(call):
         bot.send_message(uid, "❌ Service រកមិនឃើញ", reply_markup=admin_kb()); return
     old_label = s.get("label", slug)
     api_id    = s.get("api_id", "?")
+    cur_plabel = _PLATFORM_LABEL_BY_KEY.get(s.get("platform"), "⚠️ មិនទាន់កំណត់ (Guess ស្វ័យប្រវត្តិ)")
     waiting[uid] = {"step": "edit_svc_name", "slug": slug}
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🌐 កែ Platform (សម្រាប់ Link)",
+                                 callback_data=f"editsvcplat:{slug}", color="progress"))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="back:main", color="inactive"))
     bot.send_message(uid,
-        f"✏️ <b>កែឈ្មោះ Service</b>\n"
+        f"✏️ <b>កែ Service</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🆔 API ID: <code>{api_id}</code>\n"
         f"📝 ឈ្មោះ​បច្ចុប្បន្ន:\n<b>{old_label}</b>\n"
+        f"🌐 Platform បច្ចុប្បន្ន: <b>{cur_plabel}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"វាយ <b>ឈ្មោះថ្មី</b>:",
-        parse_mode="HTML", reply_markup=cancel_kb())
+        f"វាយ <b>ឈ្មោះថ្មី</b> ដើម្បីប្ដូរ, ឬចុច 🌐 ដើម្បីកែ Platform:",
+        parse_mode="HTML", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("editsvcplat:"))
+def cb_editsvcplat(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: bot.answer_callback_query(call.id); return
+    bot.answer_callback_query(call.id)
+    slug = call.data[len("editsvcplat:"):]
+    if slug not in smm_services:
+        bot.send_message(uid, "❌ Service រកមិនឃើញ", reply_markup=admin_kb()); return
+    waiting[uid] = {"step": "edit_svc_platform_pick", "slug": slug}
+    bot.send_message(uid,
+        f"🌐 <b>ជ្រើស Platform ថ្មី</b>\n"
+        f"📝 {smm_services[slug].get('label', slug)}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"ចុច 🔓 ផ្សេង បើ Service នេះទទួល Link ណាក៏បាន",
+        parse_mode="HTML", reply_markup=_platform_pick_kb("editsvcplatpick"))
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("editsvcplatpick:"))
+def cb_editsvcplatpick(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: bot.answer_callback_query(call.id); return
+    bot.answer_callback_query(call.id)
+    key = call.data[len("editsvcplatpick:"):]
+    step = waiting.get(uid, {})
+    slug = step.get("slug") if isinstance(step, dict) else None
+    if not slug or slug not in smm_services:
+        bot.send_message(uid, "❌ Service រកមិនឃើញ", reply_markup=admin_kb()); return
+    smm_services[slug]["platform"] = key
+    _save(SMM_SVC_FILE, smm_services)
+    waiting.pop(uid, None)
+    plabel = _PLATFORM_LABEL_BY_KEY.get(key, key)
+    bot.send_message(uid,
+        f"✅ <b>Platform កែរួច!</b>\n"
+        f"📝 {smm_services[slug].get('label', slug)}\n"
+        f"🌐 Platform: <b>{plabel}</b>",
+        parse_mode="HTML", reply_markup=admin_kb())
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("smmaddcat:"))
@@ -2332,6 +2496,24 @@ def cb_smmaddcat(call):
             f"ឧ: <code>5441,5448,5502</code>\n\n"
             f"💡 IDs រក នៅ SMM Panel → Services",
             parse_mode="HTML", reply_markup=cancel_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("smmaddplat:"))
+def cb_smmaddplat(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID: bot.answer_callback_query(call.id); return
+    key = call.data[len("smmaddplat:"):]
+    bot.answer_callback_query(call.id)
+    step = waiting.get(uid, {})
+    if not isinstance(step, dict): return
+    cat = step.get("cat","")
+    waiting[uid] = {"step": "smm_add_ids", "cat": cat, "platform": key}
+    plabel = _PLATFORM_LABEL_BY_KEY.get(key, key)
+    bot.send_message(uid,
+        f"📂 Category: <b>{cat}</b> · 🌐 Platform: <b>{plabel}</b>\n"
+        f"ផ្ញើ API Service IDs (comma):\n"
+        f"ឧ: <code>5441,5448,5502</code>\n\n"
+        f"💡 រក IDs នៅ SMM API Panel ➡️ Services",
+        parse_mode="HTML", reply_markup=cancel_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("delsvc:"))
 def cb_delsvc(call):
@@ -3180,16 +3362,18 @@ def handle_msg(message):
             _do_broadcast(uid, message); return
 
         if step == "smm_add_cat":
-            waiting[uid] = {"step": "smm_add_ids", "cat": text}
+            waiting[uid] = {"step": "smm_add_platform", "cat": text}
             bot.send_message(uid,
+                f"🌐 <b>ជ្រើស Platform</b> (សម្រាប់ផ្គូផ្គង Link)\n"
                 f"📂 Category: <b>{text}</b>\n"
-                f"ផ្ញើ API Service IDs (comma):\n"
-                f"ឧ: <code>5441,5448,5502</code>\n\n"
-                f"💡 រក IDs នៅ SMM API Panel ➡️ Services",
-                parse_mode="HTML", reply_markup=cancel_kb()); return
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"ជ្រើស Platform ត្រឹមត្រូវ ដើម្បីឲ្យ Bot ច្រានចោល Link ខុស Platform\n"
+                f"(ចុច 🔓 ផ្សេង បើ Service ទាំងនេះទទួល Link ណាក៏បាន)",
+                parse_mode="HTML", reply_markup=_platform_pick_kb("smmaddplat")); return
 
         if isinstance(step, dict) and step.get("step") == "smm_add_ids":
             cat = step["cat"]
+            platform = step.get("platform") or _CAT_TO_PLATFORM_KEY.get(cat)
             # Check API configured first
             if not smm_api.get("url") or not smm_api.get("key"):
                 waiting.pop(uid, None)
@@ -3215,6 +3399,7 @@ def handle_msg(message):
                         "max":       info["max"],
                         "label":     _smm_clean_name(info["raw_name"]),
                         "category":  cat,
+                        "platform":  platform,
                     }
                     ok.append(f"✅ <code>{api_id}</code> — {smm_services[slug]['label']}")
                 else:
@@ -3310,13 +3495,14 @@ def handle_msg(message):
             cat = text.strip()
             if not cat:
                 bot.send_message(uid, "❌ Category ទទេ!", reply_markup=cancel_kb()); return
-            waiting[uid] = {"step": "manual_svc_price", "label": step["label"], "cat": cat}
+            waiting[uid] = {"step": "manual_svc_platform", "label": step["label"], "cat": cat}
             bot.send_message(uid,
-                f"💰 <b>ដាក់តម្លៃ (USD per 1000)</b>\n"
+                f"🌐 <b>ជ្រើស Platform</b> (សម្រាប់ផ្គូផ្គង Link)\n"
+                f"📂 Category: <b>{cat}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"ឧ: <code>0.50</code> = $0.50 per 1K\n"
-                f"ឧ: <code>1.20</code> = $1.20 per 1K",
-                parse_mode="HTML", reply_markup=cancel_kb()); return
+                f"ជ្រើស Platform ត្រឹមត្រូវ ដើម្បីឲ្យ Bot ច្រានចោល Link ខុស Platform\n"
+                f"(ចុច 🔓 ផ្សេង បើ Service នេះទទួល Link ណាក៏បាន)",
+                parse_mode="HTML", reply_markup=_platform_pick_kb("mansvcplat")); return
 
         if isinstance(step, dict) and step.get("step") == "manual_svc_price":
             try:
@@ -3354,6 +3540,7 @@ def handle_msg(message):
             # Save manual service
             label = step["label"]; cat = step["cat"]; price = step["price"]; mn = step["min"]
             slug  = f"manual_{cat.lower().replace(' ','_')}_{int(time.time())}"
+            platform = step.get("platform") or _CAT_TO_PLATFORM_KEY.get(cat)
             smm_services[slug] = {
                 "api_id":       None,          # No API — manual
                 "manual":       True,
@@ -3362,14 +3549,17 @@ def handle_msg(message):
                 "max":          mx,
                 "label":        label,
                 "category":     cat,
+                "platform":     platform,
             }
             _save(SMM_SVC_FILE, smm_services)
             waiting.pop(uid, None)
+            plabel = _PLATFORM_LABEL_BY_KEY.get(platform, "គ្មាន (Any Link)")
             bot.send_message(uid,
                 f"✅ <b>Manual Service បានបន្ថែម!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📝 ឈ្មោះ: <b>{label}</b>\n"
                 f"📂 Category: <b>{cat}</b>\n"
+                f"🌐 Platform: <b>{plabel}</b>\n"
                 f"💰 តម្លៃ: <b>${price:.2f}/1K</b>\n"
                 f"🔢 Min: <b>{mn:,}</b> · Max: <b>{mx:,}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -3451,12 +3641,14 @@ def handle_msg(message):
             cat = text.strip()
             if not cat:
                 bot.send_message(uid, "❌ Category ទទេ!", reply_markup=cancel_kb()); return
-            waiting[uid] = {"step": "pkg_desc", "label": step["label"], "cat": cat}
+            waiting[uid] = {"step": "pkg_platform", "label": step["label"], "cat": cat}
             bot.send_message(uid,
-                "📝 <b>ការពិពណ៌នា Package (Description)</b>\n"
-                "ឧ: <code>1K-2K Likes ❤️ + 3.5K Views 👁</code>\n"
-                "ឬ វាយ <code>-</code> ដើម្បីរំលង",
-                parse_mode="HTML", reply_markup=cancel_kb()); return
+                f"🌐 <b>ជ្រើស Platform</b> (សម្រាប់ផ្គូផ្គង Link)\n"
+                f"📂 Category: <b>{cat}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"ជ្រើស Platform ត្រឹមត្រូវ ដើម្បីឲ្យ Bot ច្រានចោល Link ខុស Platform\n"
+                f"(ចុច 🔓 ផ្សេង បើ Package នេះទទួល Link ណាក៏បាន)",
+                parse_mode="HTML", reply_markup=_platform_pick_kb("pkgplat")); return
 
         if isinstance(step, dict) and step.get("step") == "pkg_desc":
             desc = text.strip()
@@ -3475,6 +3667,7 @@ def handle_msg(message):
                 bot.send_message(uid, "❌ តម្លៃខុស! ឧ: <code>0.99</code>",
                                  parse_mode="HTML", reply_markup=cancel_kb()); return
             label = step["label"]; cat = step["cat"]; desc = step.get("desc", "")
+            platform = step.get("platform") or _CAT_TO_PLATFORM_KEY.get(cat)
             slug = f"manual_pkg_{cat.lower().replace(' ','_')}_{int(time.time())}"
             smm_services[slug] = {
                 "api_id":      None,
@@ -3484,6 +3677,7 @@ def handle_msg(message):
                 "max":         1,
                 "label":       label,
                 "category":    cat,
+                "platform":    platform,
                 "flat_price":  price,
                 "preset_qtys": [1],
                 "description": desc,
@@ -4085,13 +4279,21 @@ def handle_msg(message):
         slug  = step["slug"]
         qty   = step["qty"]
         price = step["price"]
-        waiting.pop(uid, None)
         link  = text.strip()
+        s = smm_services.get(slug)
+        if not s:
+            waiting.pop(uid, None)
+            bot.send_message(uid, t(uid, "fallback"), reply_markup=main_kb(uid)); return
+        ok, err = _validate_order_link(link, slug, s)
+        if not ok:
+            # មិន pop `waiting` ទេ — ឲ្យ user ព្យាយាមផ្ញើ Link ម្ដងទៀត
+            bot.send_message(uid, err, parse_mode="HTML", reply_markup=cancel_kb())
+            return
+        waiting.pop(uid, None)
         if bal(uid) < price:
             bot.send_message(uid,
                 f"❌ Balance មិនគ្រប់!\n💳 ${bal(uid):.2f} | Need: ${price:.2f}",
                 parse_mode="HTML", reply_markup=main_kb(uid)); return
-        s = smm_services.get(slug)
         ded_bal(uid, price)
         key = smm_api.get("key",""); api_url = smm_api.get("url","")
         res = None
