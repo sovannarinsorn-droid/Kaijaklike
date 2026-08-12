@@ -218,6 +218,7 @@ BAKONG_DEEPLINK_API = "https://api-bakong.nbc.gov.kh/v1/generate_deeplink_by_qr"
 
 DEPOSIT_EXPIRE_SEC = 300   # 5 minutes (CamRapidPay expire 5 min)
 POLL_INTERVAL      = 8
+SMM_ORDER_POLL_INTERVAL = 180   # 3 minutes — Poll ស្ថានភាព Order ពី SMM API
 
 # Flask Control Server
 # សុវត្ថិភាព: បើមិនកំណត់ CONTROL_KEY ជា env var ទេ បង្កើត key ចៃដន្យ (មិនប្រើ default
@@ -861,6 +862,24 @@ def _detect_platform_domains(slug, s):
                 return domains
     return None
 
+# domain → platform key, សម្រាប់ Auto-detect Platform ផ្ទាល់ពី Link ដែល User ផ្ញើមក
+_DOMAIN_TO_PLATFORM_KEY = {}
+for _k, _lbl, _doms in _PLATFORM_CHOICES:
+    if _doms:
+        for _d in _doms:
+            _DOMAIN_TO_PLATFORM_KEY[_d] = _k
+
+def _detect_link_platform(link):
+    """ស្គាល់ Platform ពី Domain នៃ Link ខ្លួនឯង។ ត្រឡប់ (key, label) ឬ (None, None) បើមិនស្គាល់។"""
+    try:
+        netloc = link.split("://", 1)[-1].split("/", 1)[0].lower()
+    except Exception:
+        return None, None
+    for dom, key in _DOMAIN_TO_PLATFORM_KEY.items():
+        if netloc == dom or netloc.endswith("." + dom):
+            return key, _PLATFORM_LABEL_BY_KEY.get(key, key)
+    return None, None
+
 def _validate_order_link(link, slug, s):
     """ត្រឡប់ (True, None) បើ Link ត្រឹមត្រូវ, ឬ (False, error_msg) បើខុស។"""
     link = (link or "").strip()
@@ -875,8 +894,13 @@ def _validate_order_link(link, slug, s):
         netloc = link.split("://", 1)[-1].split("/", 1)[0].lower()
         if not any(netloc == d or netloc.endswith("." + d) for d in domains):
             expected = " / ".join(domains)
+            _detected_key, detected_label = _detect_link_platform(link)
+            got_line = (f"Link ដែលអ្នកផ្ញើគឺជា Link <b>{detected_label}</b> 👀\n"
+                        if detected_label else
+                        f"Link ដែលអ្នកផ្ញើមកពី Domain <code>{netloc}</code> ដែល Bot មិនស្គាល់ ⚠️\n")
             return False, (
                 f"❌ <b>Link មិនត្រូវនឹង Service នេះទេ!</b>\n"
+                f"{got_line}"
                 f"Service នេះទាមទារ Link ពី <b>{expected}</b>\n"
                 f"សូមពិនិត្យ Link ឡើងវិញ ហើយផ្ញើម្ដងទៀត។"
             )
@@ -929,6 +953,60 @@ def _smm_api_post(params, timeout=25):
         return r.json()
     except Exception as e:
         logger.error(f"SMM API: {e}"); return None
+
+def _smm_api_status(api_order_id):
+    """ពិនិត្យស្ថានភាព Order ដែលបានដាក់តាម SMM API (action=status)"""
+    key = smm_api.get("key", ""); url = smm_api.get("url", "")
+    if not key or not url or not api_order_id: return None
+    try:
+        r = http.post(url, data={"key": key, "action": "status", "order": api_order_id}, timeout=25)
+        return r.json()
+    except Exception as e:
+        logger.error(f"SMM API status: {e}"); return None
+
+def _smm_order_watcher():
+    """ 🕑 Background thread — Poll ស្ថានភាព Order ដែលដាក់ស្វ័យប្រវត្តិតាម API ជាទៀងទាត់
+    ពេល Order ដល់ស្ថានភាព "Completed" (បានគ្រប់ចំនួនដែលទិញ) → ផ្ញើសារជូនដំណឹងទៅ User ភ្លាម។
+    Order ដែលជា Manual (គ្មាន api_order_id) មិនត្រូវបាន Poll ទេ — Admin ត្រូវ Mark Done ដោយផ្ទាល់។"""
+    while True:
+        try:
+            time.sleep(SMM_ORDER_POLL_INTERVAL)
+            for oid, o in list(smm_orders.items()):
+                if o.get("status") != "pending": continue
+                api_oid = o.get("api_order_id")
+                if not api_oid: continue
+                res = _smm_api_status(api_oid)
+                if not res or not isinstance(res, dict): continue
+                st = str(res.get("status", "")).strip().lower()
+                if st == "completed":
+                    smm_orders[oid]["status"]  = "completed"
+                    smm_orders[oid]["remains"] = res.get("remains", 0)
+                    _save(SMM_ORD_FILE, smm_orders)
+                    try:
+                        bot.send_message(int(o["uid"]),
+                            f"✅ <b>Order បានជោគជ័យគ្រប់ចំនួន 100%!</b> 🎉\n"
+                            f"━━━━━━━━━━━━━━━━━━\n"
+                            f"🆔 <code>{oid}</code>\n"
+                            f"📊 {o.get('label','?')}\n"
+                            f"🔢 ចំនួន: <b>{o.get('qty',0):,}</b>\n"
+                            f"🔗 <code>{o.get('link','')}</code>\n"
+                            f"━━━━━━━━━━━━━━━━━━\n"
+                            f"🙏 អរគុណដែលប្រើ Kaijaklike!",
+                            parse_mode="HTML")
+                    except Exception as _e: logger.debug(f"[silent] {_e}")
+                elif st in ("canceled", "cancelled"):
+                    smm_orders[oid]["status"] = "canceled"
+                    _save(SMM_ORD_FILE, smm_orders)
+                    try:
+                        bot.send_message(int(o["uid"]),
+                            f"⚠️ <b>Order ត្រូវបានលុបចោល (Canceled)</b>\n"
+                            f"🆔 <code>{oid}</code>\n"
+                            f"📊 {o.get('label','?')}\n"
+                            f"សូមទាក់ទង Admin សម្រាប់ Refund។",
+                            parse_mode="HTML")
+                    except Exception as _e: logger.debug(f"[silent] {_e}")
+        except Exception as e:
+            logger.error(f"[order_watcher] {e}")
 
 def _smm_fetch_service(api_id):
     key = smm_api.get("key", "")
@@ -4619,6 +4697,7 @@ if __name__ == "__main__":
     _warm_stripped_text_map()
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=_self_ping, daemon=True).start()
+    threading.Thread(target=_smm_order_watcher, daemon=True).start()
     if IS_MASTER:
         for _cln_name, _cln_cfg in clone_registry.items():
             try:
