@@ -1423,23 +1423,37 @@ def _send_deposit_qr(uid, amount, promo_code=None, label="💸 ដាក់ល�
             subtitle="SMM Panel Deposit · ដាក់លុយ",
         )
 
-    # ── Deep Link button ចូល App ធនាគារស្វ័យប្រវត្តិ (ABA / ACLEDA / Bakong / Wing ...) ──
-    kb_pay = None
-    dlink  = _bakong_deeplink(qr_str, uid) if qr_str else None
-    if dlink:
-        kb_pay = InlineKeyboardMarkup()
-        kb_pay.add(InlineKeyboardButton("🏦 ស្កេន QR ឬ ចុចបើក App ធនាគារ", url=dlink, color="active"))
-        cap += ("\n📱 <i>ចុច button ខាងក្រោម ដើម្បីបើក App ធនាគារ auto-scan។ "
-                "បើមិនចូល App ស្វ័យប្រវត្តិទេ សូមចុច ••• (ជ្រុងស្តាំលើ ក្នុង browser) → 'បើកក្នុង Safari'</i>")
-
+    # ── ផ្ញើ QR ភ្លាមៗសិន (កុំឲ្យ deposit យឺត ដោយរង់ចាំ Bakong deeplink API) ──
     if img_buf:
         try:
-            bot.send_photo(uid, img_buf, caption=cap, parse_mode="HTML", reply_markup=kb_pay)
+            sent_msg = bot.send_photo(uid, img_buf, caption=cap, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"[deposit_qr] send_photo failed: {e}")
-            bot.send_message(uid, cap, parse_mode="HTML", reply_markup=kb_pay)
+            sent_msg = bot.send_message(uid, cap, parse_mode="HTML")
     else:
-        bot.send_message(uid, cap, parse_mode="HTML", reply_markup=kb_pay)
+        sent_msg = bot.send_message(uid, cap, parse_mode="HTML")
+
+    # ── Deep Link button ចូល App ធនាគារស្វ័យប្រវត្តិ — ធ្វើនៅ background thread
+    #    ដើម្បីកុំឲ្យរង់ចាំ Bakong API (រហូតដល់ 10s) ធ្វើឲ្យ QR ចេញយឺត/មិនចេញ ──
+    def _attach_bank_button():
+        try:
+            dlink = _bakong_deeplink(qr_str, uid) if qr_str else None
+            if not dlink:
+                return
+            kb_pay = InlineKeyboardMarkup()
+            kb_pay.add(InlineKeyboardButton("🏦 ស្កេន QR ឬ ចុចបើក App ធនាគារ", url=dlink, color="active"))
+            new_cap = cap + ("\n📱 <i>ចុច button ខាងក្រោម ដើម្បីបើក App ធនាគារ auto-scan។ "
+                              "បើមិនចូល App ស្វ័យប្រវត្តិទេ សូមចុច ••• (ជ្រុងស្តាំលើ ក្នុង browser) → 'បើកក្នុង Safari'</i>")
+            if img_buf:
+                bot.edit_message_caption(new_cap, chat_id=uid, message_id=sent_msg.message_id,
+                                         parse_mode="HTML", reply_markup=kb_pay)
+            else:
+                bot.edit_message_text(new_cap, chat_id=uid, message_id=sent_msg.message_id,
+                                      parse_mode="HTML", reply_markup=kb_pay)
+        except Exception as e:
+            logger.warning(f"[deposit_qr] attach_bank_button failed: {e}")
+
+    threading.Thread(target=_attach_bank_button, daemon=True).start()
 
     threading.Thread(target=_watch_deposit,
                      args=(uid, uid_str, dep_id, amount, reference), daemon=True).start()
