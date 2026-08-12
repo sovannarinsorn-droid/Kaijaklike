@@ -276,6 +276,7 @@ SUB_ADMIN_FILE  = _dpath("smm_sub_admins.json")
 SUPPORT_CFG_FILE= _dpath("smm_support.json")
 CAMRAPID_CFG_FILE= _dpath("smm_camrapid.json")
 BAKONG_CFG_FILE = _dpath("smm_bakong.json")
+WEBHOOK_CFG_FILE = _dpath("smm_webhook.json")
 EMOJI_FILE      = _dpath("smm_emoji.json")
 
 def _load(path, default):
@@ -546,6 +547,7 @@ sub_admins   = _load(SUB_ADMIN_FILE,   [])          # list of int UIDs
 support_cfg  = _load(SUPPORT_CFG_FILE, {"kh": "", "en": ""})   # custom support text per lang
 camrapid_cfg = _load(CAMRAPID_CFG_FILE, {"key": ""})            # live-editable API key
 bakong_cfg   = _load(BAKONG_CFG_FILE, {"token": ""})            # live-editable Bakong Developer Token
+webhook_cfg  = _load(WEBHOOK_CFG_FILE, {"url": ""})              # live-editable CamRapidPay webhook URL
 
 def _effective_camrapid_key():
     """Return runtime key if set, else fall back to env/default"""
@@ -1359,21 +1361,32 @@ def _build_qr_image(qr_string, amount=None, ref=None, label=None, subtitle=None,
 #  (v9: replace manual EMV TLV with CamRapidPay API)
 # ═══════════════════════════════════════════════════════════
 
+def _effective_webhook_url():
+    """CamRapidPay ទាមទារ webhook_url ជា Required Field (បញ្ជាក់ដោយ API ផ្ទាល់៖
+    'Missing required fields: ... webhook_url ...') ដូច្នេះត្រូវផ្ញើជានិច្ច។
+    អាទិភាព៖ 1) webhook_cfg (Set ដោយផ្ទាល់ក្នុង Bot តាម Admin Menu)  2) WEBHOOK_URL env var
+    3) Auto-build ពី RENDER_EXTERNAL_URL ទៅកាន់ Route /webhook/camrapid ដែល Bot ស្គាល់ស្រាប់
+    4) Fallback ចុងក្រោយ (គ្មាន Public URL ទាល់តែសោះ) — Placeholder ដែលមិន Leak អី"""
+    if webhook_cfg.get("url"):
+        return webhook_cfg["url"]
+    if WEBHOOK_URL:
+        return WEBHOOK_URL
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if render_url:
+        return render_url.rstrip("/") + "/webhook/camrapid"
+    return "https://example.com/webhook/camrapid"
+
 def _camrapid_create(uid, amount, reference):
     """Create KHQR payment via CamRapidPay API — returns response dict or None"""
     payload = {
-        "api_key":   _effective_camrapid_key(),
-        "amount":    round(float(amount), 2),
-        "reference": reference,
+        "api_key":     _effective_camrapid_key(),
+        "amount":      round(float(amount), 2),
+        "reference":   reference,
+        "webhook_url": _effective_webhook_url(),
     }
-    if WEBHOOK_URL:
-        payload["webhook_url"] = WEBHOOK_URL
-    # បើគ្មាន WEBHOOK_URL កំណត់ទេ — កុំផ្ញើ field នេះទាល់តែសោះ (ជំនួសដាក់ domain
-    # ក្លែងក្លាយ) ព្រោះ CamRapidPay អាចព្យាយាម POST ទៅ domain ស្លាប់ រង់ចាំរហូតដល់
-    # timeout ចប់ ធ្វើឲ្យ QR ចេញយឺត។ Bot ស្វែងរកការទូទាត់ដោយខ្លួនឯងតាម polling
-    # (_watch_deposit) រួចហើយ ដូច្នេះមិនចាំបាច់ webhook ក៏បាន។
 
-    logger.info(f"[camrapid_create] uid={uid} ref={reference} amount={payload['amount']}")
+    logger.info(f"[camrapid_create] uid={uid} ref={reference} amount={payload['amount']} "
+                f"webhook={payload['webhook_url']}")
     try:
         r = http.post(CAMRAPID_CREATE,
                       json=payload,
@@ -2872,6 +2885,16 @@ def cb_set_camrapid(call):
             "🔑 <b>ផ្ញើ CamRapidPay API Key ថ្មី:</b>\n"
             "ឬផ្ញើ <code>-</code> ដើម្បី reset ទៅ env/default",
             parse_mode="HTML", reply_markup=cancel_kb())
+    elif action == "webhook":
+        waiting[uid] = "set_webhook_url"
+        bot.send_message(uid,
+            "🌐 <b>ផ្ញើ Webhook URL ថ្មី:</b>\n"
+            "ឧ: <code>https://your-domain.com/webhook/camrapid</code>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 CamRapidPay ទាមទារ Field នេះជានិច្ច (Required) — Bot មាន Route "
+            "<code>/webhook/camrapid</code> ស្រាប់ដើម្បីទទួល។\n"
+            "ឬផ្ញើ <code>-</code> ដើម្បី Reset ទៅ Auto-detect (Render URL ឬ Placeholder)",
+            parse_mode="HTML", reply_markup=cancel_kb())
     elif action == "test":
         key = _effective_camrapid_key()
         try:
@@ -2895,7 +2918,8 @@ def cb_set_camrapid(call):
         test_ref = f"TEST{uid}_{int(time.time())}"[:50]
         bot.send_message(uid, "⏳ កំពុង Test ការ Generate QR ជាមួយ CAMRAPID_CREATE endpoint ($0.10)...")
         try:
-            payload = {"api_key": key, "amount": 0.10, "reference": test_ref}
+            payload = {"api_key": key, "amount": 0.10, "reference": test_ref,
+                       "webhook_url": _effective_webhook_url()}
             r = http.post(CAMRAPID_CREATE, json=payload,
                           headers={"Content-Type": "application/json", "Accept": "application/json"},
                           timeout=15)
@@ -4204,15 +4228,24 @@ def handle_msg(message):
                 bot.send_message(uid, "🚫 Master Admin only!", reply_markup=sub_admin_kb()); return
             cur = _effective_camrapid_key()
             masked = cur[:8] + "..." + cur[-4:] if len(cur) > 12 else ("*" * len(cur) if cur else cur)
+            wh_cur = _effective_webhook_url()
+            wh_src = ("📁 Set ក្នុង Bot" if webhook_cfg.get("url")
+                      else "⚙️ env WEBHOOK_URL" if WEBHOOK_URL
+                      else "🤖 Auto (Render)" if os.getenv("RENDER_EXTERNAL_URL")
+                      else "🔧 Placeholder ក្លែងក្លាយ")
             kb2 = InlineKeyboardMarkup()
             kb2.add(InlineKeyboardButton("✏️ ប្តូរ Key ថ្មី", callback_data="set_camrapid:edit", color="progress"))
+            kb2.add(InlineKeyboardButton("🌐 ប្តូរ Webhook URL", callback_data="set_camrapid:webhook", color="progress"))
             kb2.add(InlineKeyboardButton("🧪 Test Key (Check Endpoint)", callback_data="set_camrapid:test", color="active"))
             kb2.add(InlineKeyboardButton("🧾 Test Generate QR (Create Endpoint)", callback_data="set_camrapid:testcreate", color="active"))
             bot.send_message(uid,
                 f"🔑 <b>CamRapidPay API Key</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"Key: <code>{masked}</code>\n"
-                f"Source: {'📁 runtime' if camrapid_cfg.get('key') else '⚙️ env/default'}",
+                f"Source: {'📁 runtime' if camrapid_cfg.get('key') else '⚙️ env/default'}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🌐 Webhook URL: <code>{wh_cur}</code>\n"
+                f"Source: {wh_src}",
                 parse_mode="HTML", reply_markup=kb2); return
 
         if text == "🏦 Bakong Deep Link":
@@ -4308,6 +4341,26 @@ def handle_msg(message):
                 _save(CAMRAPID_CFG_FILE, camrapid_cfg)
                 masked = k[:8] + "..." + k[-4:] if len(k) > 12 else "*" * len(k)
                 bot.send_message(uid, f"✅ CamRapidPay Key ថ្មីបានរក្សា!\n🔑 <code>{masked}</code>",
+                                 parse_mode="HTML", reply_markup=admin_kb())
+            return
+
+        if step == "set_webhook_url":
+            waiting.pop(uid, None)
+            if text.strip() == "-":
+                webhook_cfg["url"] = ""
+                _save(WEBHOOK_CFG_FILE, webhook_cfg)
+                bot.send_message(uid,
+                    f"✅ Webhook URL reset ទៅ Auto-detect!\n🌐 <code>{_effective_webhook_url()}</code>",
+                    parse_mode="HTML", reply_markup=admin_kb())
+            else:
+                u = text.strip()
+                if not (u.startswith("http://") or u.startswith("https://")):
+                    bot.send_message(uid,
+                        "❌ URL ត្រូវចាប់ផ្ដើមដោយ <code>http://</code> ឬ <code>https://</code>!",
+                        parse_mode="HTML", reply_markup=admin_kb()); return
+                webhook_cfg["url"] = u
+                _save(WEBHOOK_CFG_FILE, webhook_cfg)
+                bot.send_message(uid, f"✅ Webhook URL ថ្មីបានរក្សា!\n🌐 <code>{u}</code>",
                                  parse_mode="HTML", reply_markup=admin_kb())
             return
 
@@ -4674,6 +4727,27 @@ def _check_key():
 @flask_app.route("/health")
 def health():
     return jsonify({"status": "running", "bot": "Kaijaklike"})
+
+@flask_app.route("/webhook/camrapid", methods=["POST"])
+def camrapid_webhook():
+    """ទទួល Webhook ពី CamRapidPay ពេល Payment ចូល — ធ្វើឲ្យ Confirm លឿនជាង Poll ។
+    ចំណាំ: Bot នៅតែ Poll ជា Backup ដដែល (_watch_deposit) ដូច្នេះ Route នេះជា Bonus
+    មិនមែនជា Dependency តឹងរឹងទេ — បើមិនមាន Webhook ក៏ដំណើរការធម្មតា។"""
+    try:
+        data = flask_request.get_json(silent=True) or {}
+        reference = data.get("reference") or data.get("bill_number") or ""
+        logger.info(f"[camrapid_webhook] received: {data}")
+        if reference:
+            for dep_id, dep in list(smm_deps.items()):
+                if dep.get("reference") == reference and dep.get("status") == "pending":
+                    # _watch_deposit នឹងបន្ត Detect នៅ Poll ជុំបន្ទាប់ដោយស្វ័យប្រវត្តិ —
+                    # Route នេះគ្រាន់តែ Log ទុកសម្រាប់ Debug, មិន Mutate State ដោយផ្ទាល់ទេ
+                    # ដើម្បីជៀសវាង Race Condition ជាមួយ Thread _watch_deposit ដែលកំពុង Poll ស្រាប់។
+                    break
+        return jsonify({"received": True}), 200
+    except Exception as e:
+        logger.error(f"[camrapid_webhook] error: {e}")
+        return jsonify({"received": False}), 200
 
 @flask_app.route("/status")
 def status():
