@@ -2879,13 +2879,49 @@ def cb_set_camrapid(call):
             d = r.json()
             ok = r.status_code < 500
             bot.send_message(uid,
-                f"{'✅' if ok else '❌'} <b>CamRapidPay Test</b>\n"
+                f"{'✅' if ok else '❌'} <b>CamRapidPay Test (Check Endpoint)</b>\n"
                 f"Status: <b>{r.status_code}</b>\n"
-                f"Response: <code>{str(d)[:200]}</code>",
+                f"Response: <code>{str(d)[:200]}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💡 <i>Status 404 + \"Transaction not found\" នៅទីនេះជារឿងធម្មតា — "
+                f"មិនមែនសញ្ញាបញ្ហាទេ ព្រោះ reference ដែល Test ជា Fake។ Endpoint នេះមិនមែនជាកន្លែង "
+                f"Generate QR ទេ — ប្រើ 🧾 Test Generate QR ខាងក្រោមដើម្បីរកមូលហេតុពិត។</i>",
                 parse_mode="HTML", reply_markup=admin_kb())
         except Exception as e:
             bot.send_message(uid, f"❌ Test failed: <code>{e}</code>",
                              parse_mode="HTML", reply_markup=admin_kb())
+    elif action == "testcreate":
+        key = _effective_camrapid_key()
+        test_ref = f"TEST{uid}_{int(time.time())}"[:50]
+        bot.send_message(uid, "⏳ កំពុង Test ការ Generate QR ជាមួយ CAMRAPID_CREATE endpoint ($0.10)...")
+        try:
+            payload = {"api_key": key, "amount": 0.10, "reference": test_ref}
+            r = http.post(CAMRAPID_CREATE, json=payload,
+                          headers={"Content-Type": "application/json", "Accept": "application/json"},
+                          timeout=15)
+            try:
+                d = r.json()
+            except Exception:
+                d = {"raw_text": r.text[:300]}
+            ok = isinstance(d, dict) and d.get("success")
+            bot.send_message(uid,
+                f"{'✅' if ok else '❌'} <b>CamRapidPay Test (Create Endpoint — QR ពិតប្រាកដ)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🌐 URL: <code>{CAMRAPID_CREATE}</code>\n"
+                f"🔑 Key: <code>{key[:8]}...{key[-4:] if len(key)>12 else ''}</code>\n"
+                f"📡 HTTP Status: <b>{r.status_code}</b>\n"
+                f"📋 Response: <code>{str(d)[:500]}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                + ("✅ QR គួរតែចេញបានធម្មតា!" if ok else
+                   "❌ នេះជាមូលហេតុពិតប្រាកដដែល QR មិនចេញ — សូមអានសារ Error ខាងលើ "
+                   "(ឧ. \"Invalid API Key\", \"Insufficient balance\", \"Merchant not found\" ។ល។)"),
+                parse_mode="HTML", reply_markup=admin_kb())
+        except Exception as e:
+            bot.send_message(uid,
+                f"❌ <b>Connection Failed</b>\n<code>{e}</code>\n\n"
+                f"💡 ប្រហែល Network/Egress ត្រូវបាន Block លើ Server ដែល Deploy Bot នេះ "
+                f"(Render/VPS) ពី <code>pay.camrapidpay.com</code>",
+                parse_mode="HTML", reply_markup=admin_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("set_bakong:"))
 def cb_set_bakong(call):
@@ -4170,7 +4206,8 @@ def handle_msg(message):
             masked = cur[:8] + "..." + cur[-4:] if len(cur) > 12 else ("*" * len(cur) if cur else cur)
             kb2 = InlineKeyboardMarkup()
             kb2.add(InlineKeyboardButton("✏️ ប្តូរ Key ថ្មី", callback_data="set_camrapid:edit", color="progress"))
-            kb2.add(InlineKeyboardButton("🧪 Test Key", callback_data="set_camrapid:test", color="active"))
+            kb2.add(InlineKeyboardButton("🧪 Test Key (Check Endpoint)", callback_data="set_camrapid:test", color="active"))
+            kb2.add(InlineKeyboardButton("🧾 Test Generate QR (Create Endpoint)", callback_data="set_camrapid:testcreate", color="active"))
             bot.send_message(uid,
                 f"🔑 <b>CamRapidPay API Key</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
