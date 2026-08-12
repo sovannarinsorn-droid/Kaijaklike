@@ -65,7 +65,7 @@ _EMOJI_CHAR_LIST = [
     '🖼️', '📘', '📸', '⚡', '📭', '📞', '🔖', '👜', '🙍', '🛠️',
     '★', '🎁', '🧵', '👀', '😍', '🛡️', '📏', '📎', '🔓', '⬅️',
     '✨', '➡️', '🔌', '🔵', '🟡', '📤', '🔕', '📁', '🚀', '←',
-    '⏱', '🆔', '▶️',
+    '⏱', '🆔', '▶️', '🏦',
 ]
 EMOJI_MAP = {ch: None for ch in _EMOJI_CHAR_LIST}
 # ធ្វើ regex pattern មួយសម្រាប់ចាប់ emoji នៅដើម string (រួមទាំង variation
@@ -881,25 +881,13 @@ def _notify(msg):
         saved_cid = cfg.get("channel_id", "")
         if saved_cid:
             cid = int(saved_cid)
-    except:
-        pass
+    except Exception as _e:
+        logger.debug(f"[silent] {_e}")
     try:
         bot.send_message(cid, msg, parse_mode="HTML")
         logger.info(f"[notify] sent to {cid}")
     except Exception as e:
         logger.warning(f"[notify] failed cid={cid} err={e}")
-
-def _send_order_notify(uid, oid, label, qty, link, price):
-    _notify(
-        f"🛒 <b>Order ថ្មី!</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 User ID: <code>{uid}</code>\n"
-        f"📦 សេវា: {label}\n"
-        f"🔢 ចំនួន: {qty:,}\n"
-        f"💵 តម្លៃ: <b>${price:.2f}</b>\n"
-        f"🆔 Order ID: <code>{oid}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━"
-    )
 
 def _send_deposit_notify(uid, amount, bonus, new_bal):
     msg = (
@@ -925,45 +913,6 @@ def _get_notify_cfg():
 
 def _make_order_id():
     return f"KZ{int(time.time())%100000:05d}"
-
-def _place_smm_order(uid, slug, qty, link):
-    uid_str = str(uid)
-    s = smm_services.get(slug)
-    if not s: return None, "❌ Service រកមិនឃើញ"
-    sr    = _smm_sell_rate(s["cost_rate"], slug)
-    price = sr * qty / 1000
-    if bal(uid) < price: return None, f"❌ Balance មិនគ្រប់! (Balance: ${bal(uid):.2f})"
-    ded_bal(uid, price)
-    key = smm_api.get("key",""); url = smm_api.get("url","")
-    res = None
-    if key and url:
-        res = _smm_api_post({"key": key, "action": "add",
-                             "service": s["api_id"], "link": link, "quantity": qty})
-    api_order_id = str(res.get("order","")) if res else ""
-    oid = _make_order_id()
-    smm_orders[oid] = {
-        "uid": uid_str, "slug": slug, "label": s.get("label",slug),
-        "qty": qty, "price": price, "link": link, "api_order_id": api_order_id,
-        "status": "pending", "ts": int(time.time()),
-    }
-    _save(SMM_ORD_FILE, smm_orders)
-    # Notify channel directly — no config dependency
-    try:
-        ord_msg = (
-            f"🛒 <b>Order ថ្មី!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 User ID: <code>{uid}</code>\n"
-            f"📦 សេវា: {s.get('label', slug)}\n"
-            f"🔢 ចំនួន: {qty:,}\n"
-            f"💵 តម្លៃ: <b>${price:.2f}</b>\n"
-            f"🆔 Order ID: <code>{oid}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━"
-        )
-        bot.send_message(NOTIFY_CHANNEL_ID_DEFAULT, ord_msg, parse_mode="HTML")
-        logger.info(f"[order_notify] sent uid={uid} oid={oid}")
-    except Exception as e:
-        logger.warning(f"[order_notify] failed: {e}")
-    return oid, None
 
 # ═══════════════════════════════════════════════════════════
 #  KHQR CARD GENERATOR  (Bakong-style branded card)
@@ -1232,8 +1181,10 @@ def _camrapid_create(uid, amount, reference):
     }
     if WEBHOOK_URL:
         payload["webhook_url"] = WEBHOOK_URL
-    else:
-        payload["webhook_url"] = f"https://placeholder.kairozen.store/wh/{reference}"
+    # បើគ្មាន WEBHOOK_URL កំណត់ទេ — កុំផ្ញើ field នេះទាល់តែសោះ (ជំនួសដាក់ domain
+    # ក្លែងក្លាយ) ព្រោះ CamRapidPay អាចព្យាយាម POST ទៅ domain ស្លាប់ រង់ចាំរហូតដល់
+    # timeout ចប់ ធ្វើឲ្យ QR ចេញយឺត។ Bot ស្វែងរកការទូទាត់ដោយខ្លួនឯងតាម polling
+    # (_watch_deposit) រួចហើយ ដូច្នេះមិនចាំបាច់ webhook ក៏បាន។
 
     logger.info(f"[camrapid_create] uid={uid} ref={reference} amount={payload['amount']}")
     try:
@@ -1332,7 +1283,7 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
                 msg += f"\n🎁 Auto Bonus: <b>+${auto_bonus:.2f}</b>"
             msg += f"\n💳 Balance: <b>${new_b:.2f}</b>\n━━━━━━━━━━━━━━━━━━\n💙 អរគុណដែលប្រើ Kaijaklike!"
             try: bot.send_message(uid, msg, parse_mode="HTML", reply_markup=main_kb(uid))
-            except: pass
+            except Exception as _e: logger.debug(f"[silent] {_e}")
             try:
                 bot.send_message(ADMIN_ID,
                     f"💰 <b>ដាក់លុយ ✅</b>\n👤 <code>{uid_str}</code>\n"
@@ -1340,7 +1291,7 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
                     f"💰 ${amount:.2f}" + (f" + Bonus ${bonus:.2f}" if bonus > 0 else "") +
                     (f" (Promo ${promo_bonus:.2f} / Auto ${auto_bonus:.2f})" if (promo_bonus > 0 and auto_bonus > 0) else ""),
                     parse_mode="HTML")
-            except: pass
+            except Exception as _e: logger.debug(f"[silent] {_e}")
             # Notify channel — call _notify directly to avoid any config issues
             try:
                 dep_msg = (
@@ -1362,7 +1313,7 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
     if dep and dep.get("status") == "pending":
         dep["status"] = "expired"; _save(SMM_DEP_FILE, smm_deps)
         try: bot.send_message(uid, "⏰ <b>QR ផុតកំណត់!</b> សូម top up ម្តងទៀត", parse_mode="HTML")
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
 
 def _send_deposit_qr(uid, amount, promo_code=None, label="💸 ដាក់លុយ", bonus=0.0, promo_code_name=None,
                       promo_bonus=0.0, auto_bonus=0.0):
@@ -1929,7 +1880,7 @@ def cb_setlang(call):
     _save(LANG_FILE, user_lang)
     bot.answer_callback_query(call.id, t(uid, "lang_set"))
     try: bot.delete_message(uid, call.message.message_id)
-    except: pass
+    except Exception as _e: logger.debug(f"[silent] {_e}")
     _show_welcome(uid)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("poll:"))
@@ -1941,7 +1892,7 @@ def cb_poll(call):
     bot.answer_callback_query(call.id, f"✅ Poll = {sec}s")
     try: bot.edit_message_text(f"✅ Poll Speed = <b>{sec} វិ</b>",
                                chat_id=uid, message_id=call.message.message_id, parse_mode="HTML")
-    except: pass
+    except Exception as _e: logger.debug(f"[silent] {_e}")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("depbonus:"))
 def cb_depbonus(call):
@@ -1965,7 +1916,7 @@ def cb_depbonus(call):
                 f"នឹងទទួល Bonus <b>{float(dep_bonus_cfg.get('pct',5.0)):.0f}%</b> បញ្ចូល Balance ដោយស្វ័យប្រវត្តិ "
                 f"(បូកបន្ថែមលើ Promo Code ប្រសិនបើមាន)។",
                 chat_id=uid, message_id=call.message.message_id, parse_mode="HTML", reply_markup=btns)
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
         return
     if action == "edit":
         bot.answer_callback_query(call.id)
@@ -2009,7 +1960,7 @@ def cb_back(call):
     waiting.pop(uid, None)
     if dest == "main":
         try: bot.delete_message(uid, call.message.message_id)
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
         _show_welcome(uid)
     elif dest == "smmcats":
         try:
@@ -2028,7 +1979,7 @@ def cb_smmcat(call):
     svcs = _smm_get_svcs_in_cat(cat)
     if not svcs:
         try: bot.answer_callback_query(call.id, "❌ គ្មាន Service", show_alert=True)
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
         return
     is_tiktok_khmer = "tiktok khmer" in cat.lower()
     if is_tiktok_khmer:
@@ -2185,12 +2136,12 @@ def cb_admrej(call):
         bot.edit_message_text(
             f"❌ <b>Deposit Rejected</b>\n📌 Ref: <code>{dep.get('reference','')}</code>",
             chat_id=uid, message_id=call.message.message_id, parse_mode="HTML")
-    except: pass
+    except Exception as _e: logger.debug(f"[silent] {_e}")
     try:
         bot.send_message(int(dep["uid"]),
             "❌ <b>ការ Deposit ត្រូវបាន Reject!</b>\nទំនាក់ Admin: @KhmerSmm099",
             parse_mode="HTML")
-    except: pass
+    except Exception as _e: logger.debug(f"[silent] {_e}")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("mansvc_cat:"))
 def cb_mansvc_cat(call):
@@ -2295,7 +2246,7 @@ def cb_manord(call):
         _save(SMM_ORD_FILE, smm_orders)
         try:
             bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
         try:
             bot.send_message(int(o["uid"]),
                 f"❌ <b>Order ត្រូវបាន Reject!</b>\n"
@@ -2305,7 +2256,7 @@ def cb_manord(call):
                 parse_mode="HTML")
             # Refund
             add_bal(int(o["uid"]), float(o.get("price") or 0))
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
         bot.send_message(uid,
             f"❌ <b>Rejected & Refunded</b>\n🆔 <code>{oid}</code>",
             parse_mode="HTML", reply_markup=admin_kb())
@@ -2366,7 +2317,7 @@ def cb_delsvc(call):
             smm_services.pop(slug, None)
         _save(SMM_SVC_FILE, smm_services)
         try: bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
         bot.send_message(uid,
             f"✅ Deleted <b>{len(to_del)}</b> services in <b>{cat}</b>",
             parse_mode="HTML", reply_markup=admin_kb())
@@ -2381,7 +2332,7 @@ def cb_delsvc(call):
     smm_services.pop(slug, None)
     _save(SMM_SVC_FILE, smm_services)
     try: bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
-    except: pass
+    except Exception as _e: logger.debug(f"[silent] {_e}")
     bot.send_message(uid,
         f"✅ Deleted: <b>[{api_id}] {label}</b>\n"
         f"📊 Remaining: <b>{len(smm_services)}</b>",
@@ -2958,7 +2909,7 @@ def handle_msg(message):
                 try: bot.send_message(int(target),
                     f"✅ Admin បន្ថែមលុយ! +${amt:.2f} | Balance: <b>${bal(int(target)):.2f}</b>",
                     parse_mode="HTML")
-                except: pass
+                except Exception as _e: logger.debug(f"[silent] {_e}")
             except: bot.send_message(uid, "❌ Format ខុស")
             return
 
@@ -3100,7 +3051,7 @@ def handle_msg(message):
                 try: bot.send_message(int(target),
                     f"✅ <b>Admin បន្ថែមលុយ!</b>\n💰 +${amt:.2f} | Balance: <b>${bal(int(target)):.2f}</b>",
                     parse_mode="HTML")
-                except: pass
+                except Exception as _e: logger.debug(f"[silent] {_e}")
             except: bot.send_message(uid, "❌ Amount ខុស! ឧ: <code>5.00</code>", parse_mode="HTML")
             return
 
@@ -3119,7 +3070,7 @@ def handle_msg(message):
                 try: bot.send_message(int(target),
                     f"⚠️ <b>Admin កាត់លុយ!</b>\n💔 -${ded:.2f} | Balance: <b>${bal(int(target)):.2f}</b>",
                     parse_mode="HTML")
-                except: pass
+                except Exception as _e: logger.debug(f"[silent] {_e}")
             except: bot.send_message(uid, "❌ Amount ខុស!")
             return
 
@@ -3391,7 +3342,7 @@ def handle_msg(message):
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"🙏 អរគុណ!",
                     parse_mode="HTML")
-            except: pass
+            except Exception as _e: logger.debug(f"[silent] {_e}")
             bot.send_message(uid,
                 f"✅ <b>Order Completed!</b>\n🆔 <code>{oid}</code>",
                 parse_mode="HTML", reply_markup=admin_kb()); return
@@ -3873,7 +3824,7 @@ def handle_msg(message):
             if uid != ADMIN_ID:
                 bot.send_message(uid, "🚫 Master Admin only!", reply_markup=sub_admin_kb()); return
             cur = _effective_camrapid_key()
-            masked = cur[:8] + "..." + cur[-4:] if len(cur) > 12 else cur
+            masked = cur[:8] + "..." + cur[-4:] if len(cur) > 12 else ("*" * len(cur) if cur else cur)
             kb2 = InlineKeyboardMarkup()
             kb2.add(InlineKeyboardButton("✏️ ប្តូរ Key ថ្មី", callback_data="set_camrapid:edit", color="progress"))
             kb2.add(InlineKeyboardButton("🧪 Test Key", callback_data="set_camrapid:test", color="active"))
@@ -3888,7 +3839,7 @@ def handle_msg(message):
             if uid != ADMIN_ID:
                 bot.send_message(uid, "🚫 Master Admin only!", reply_markup=sub_admin_kb()); return
             cur = _effective_bakong_token()
-            masked = (cur[:8] + "..." + cur[-4:]) if len(cur) > 12 else (cur or "(មិនទាន់កំណត់)")
+            masked = (cur[:8] + "..." + cur[-4:]) if len(cur) > 12 else (("*" * len(cur)) if cur else "(មិនទាន់កំណត់)")
             kb2 = InlineKeyboardMarkup()
             kb2.add(InlineKeyboardButton("✏️ ប្តូរ Token ថ្មី", callback_data="set_bakong:edit", color="progress"))
             kb2.add(InlineKeyboardButton("🧪 Test Token", callback_data="set_bakong:test", color="active"))
@@ -3975,7 +3926,7 @@ def handle_msg(message):
                     bot.send_message(uid, "❌ Key ខ្លីពេក!", reply_markup=admin_kb()); return
                 camrapid_cfg["key"] = k
                 _save(CAMRAPID_CFG_FILE, camrapid_cfg)
-                masked = k[:8] + "..." + k[-4:]
+                masked = k[:8] + "..." + k[-4:] if len(k) > 12 else "*" * len(k)
                 bot.send_message(uid, f"✅ CamRapidPay Key ថ្មីបានរក្សា!\n🔑 <code>{masked}</code>",
                                  parse_mode="HTML", reply_markup=admin_kb())
             return
@@ -3993,7 +3944,7 @@ def handle_msg(message):
                     bot.send_message(uid, "❌ Token ខ្លីពេក!", reply_markup=admin_kb()); return
                 bakong_cfg["token"] = k
                 _save(BAKONG_CFG_FILE, bakong_cfg)
-                masked = k[:8] + "..." + k[-4:] if len(k) > 12 else k
+                masked = k[:8] + "..." + k[-4:] if len(k) > 12 else "*" * len(k)
                 bot.send_message(uid, f"✅ Bakong Token ថ្មីបានរក្សា!\n🏦 <code>{masked}</code>\n"
                                        f"🔘 Button បើក App ធនាគារនឹងបង្ហាញលើក QR ថ្មីៗចាប់ពីនេះទៅ",
                                  parse_mode="HTML", reply_markup=admin_kb())
@@ -4065,7 +4016,7 @@ def handle_msg(message):
             msg += f"\n🎁 Auto Bonus: <b>+${auto_bonus:.2f}</b>"
         msg += f"\n💳 Balance: <b>${new_b:.2f}</b>"
         try: bot.send_message(user_uid, msg, parse_mode="HTML", reply_markup=main_kb(user_uid))
-        except: pass
+        except Exception as _e: logger.debug(f"[silent] {_e}")
         bot.send_message(uid,
             f"✅ <b>Confirmed!</b>\n👤 <code>{dep['uid']}</code>\n💰 <b>${paid:.2f}</b>",
             parse_mode="HTML", reply_markup=admin_kb())
@@ -4149,7 +4100,7 @@ def handle_msg(message):
                 InlineKeyboardButton("❌ Reject", callback_data=f"manord:reject:{oid}", color="inactive"),
             ]])
             try: bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=kb_adm)
-            except: pass
+            except Exception as _e: logger.debug(f"[silent] {_e}")
         elif is_manual:
             admin_msg = (
                 f"✍️ <b>Manual SMM Order</b>\n"
@@ -4165,12 +4116,12 @@ def handle_msg(message):
                 InlineKeyboardButton("❌ Reject", callback_data=f"manord:reject:{oid}", color="inactive"),
             ]])
             try: bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=kb_adm)
-            except: pass
+            except Exception as _e: logger.debug(f"[silent] {_e}")
         else:
             try: bot.send_message(ADMIN_ID,
                 f"📊 <b>SMM Order</b>\n👤 <code>{uid_str}</code> | {s.get('label',slug)} | {qty:,} | ${price:.4f}",
                 parse_mode="HTML")
-            except: pass
+            except Exception as _e: logger.debug(f"[silent] {_e}")
         return
 
     # Track order
@@ -4328,7 +4279,7 @@ def shutdown():
     try:
         bot.send_message(ADMIN_ID, "🛑 <b>Bot កំពុងបិទ...</b>", parse_mode="HTML")
         time.sleep(1)
-    except: pass
+    except Exception as _e: logger.debug(f"[silent] {_e}")
     def _stop():
         time.sleep(0.5)
         bot.stop_polling()
@@ -4345,7 +4296,7 @@ def restart():
     try:
         bot.send_message(ADMIN_ID, "🔄 <b>Bot កំពុង Restart...</b>", parse_mode="HTML")
         time.sleep(1)
-    except: pass
+    except Exception as _e: logger.debug(f"[silent] {_e}")
     def _restart():
         time.sleep(0.5)
         bot.stop_polling()
