@@ -769,6 +769,11 @@ def apply_promo(uid, code, amount):
     user_used = p.get("user_used", {})
     if str(uid) in user_used:
         return amount, 0, "❌ អ្នកបានប្រើ Promo Code នេះហើយ!"
+    # ការពារ Double-dip៖ កុំឲ្យ Generate ច្រើន QR ជាមួយ Code ដដែល ខណៈពេលមួយ Pending ចាំបង់ប្រាក់ស្រាប់
+    # (ព្រោះ confirm_promo() ត្រូវបានពន្យារពេលរហូតដល់ Payment ពិតជាបានបញ្ជាក់ មិនមែនពេល Generate QR ទៀតទេ)
+    for d in smm_deps.values():
+        if d.get("uid") == str(uid) and d.get("status") == "pending" and d.get("promo") == code:
+            return amount, 0, "❌ អ្នកមាន QR Pending ដែលប្រើ Promo Code នេះរួចហើយ! សូមបង់ប្រាក់ ឬចាំវាផុតកំណត់សិន។"
     if p.get("pct", False):
         discount = round(amount * float(p["discount"]) / 100, 2)
     else:
@@ -1455,6 +1460,8 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
             add_bal(uid, total)
             smm_deps[dep_id]["status"] = "confirmed"
             _save(SMM_DEP_FILE, smm_deps)
+            if dep.get("promo") and promo_bonus > 0:
+                confirm_promo(dep["promo"], uid)
             new_b = bal(uid)
             msg = (f"✅ <b>ដាក់លុយបានជោគជ័យហើយ!</b> 🎉\n"
                    f"━━━━━━━━━━━━━━━━━━\n"
@@ -1528,8 +1535,9 @@ def _send_deposit_qr(uid, amount, promo_code=None, label="💸 ដាក់ល�
     }
     _save(SMM_DEP_FILE, smm_deps)
 
-    if promo_applied and promo_bonus > 0:
-        confirm_promo(promo_applied, uid)
+    # ចំណាំ: Promo Code មិន confirm_promo() (consume) នៅទីនេះទេ — រង់ចាំរហូតដល់ Payment
+    # ពិតជាបានបញ្ជាក់ (_watch_deposit / Admin manual confirm) ដើម្បីកុំឲ្យ User ខាត Promo Code
+    # ដោយឥតបានការ បើ QR ផុតកំណត់ ឬ User មិនបានបង់ប្រាក់ជាដុំ។
 
     # Caption text (shown below card photo)
     ref_short = reference[-12:] if len(reference) > 12 else reference
@@ -2459,6 +2467,11 @@ def cb_manord(call):
     if not o:
         bot.send_message(uid, f"❌ Order <code>{oid}</code> រកមិនឃើញ",
                          parse_mode="HTML"); return
+    # ការពារចុច Done/Reject ដដែលៗ (ឧ. Admin ចុចលឿនពីរដង) ដែលអាចធ្វើឲ្យសងលុយ/Complete ២ដង
+    if o.get("status") in ("completed", "rejected", "canceled"):
+        bot.send_message(uid,
+            f"⚠️ Order <code>{oid}</code> ត្រូវបានដំណើរការរួចហើយ (ស្ថានភាព: <b>{o.get('status')}</b>)",
+            parse_mode="HTML"); return
     if action == "done":
         waiting[uid] = {"step": "manual_order_done", "oid": oid, "user_uid": o["uid"]}
         bot.send_message(uid,
@@ -2477,6 +2490,8 @@ def cb_manord(call):
         try:
             bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
         except Exception as _e: logger.debug(f"[silent] {_e}")
+        # Refund — ដាច់ដោយឡែកពី Notify, ដើម្បីកុំឲ្យ User ខាតលុយបើផ្ញើសារទៅគាត់មិនចេញ (ឧ. Block Bot)
+        add_bal(int(o["uid"]), float(o.get("price") or 0))
         try:
             bot.send_message(int(o["uid"]),
                 f"❌ <b>Order ត្រូវបាន Reject!</b>\n"
@@ -2484,8 +2499,6 @@ def cb_manord(call):
                 f"💳  លុយបានដក (${ o.get('price',0):.4f}) ត្រូវបានសងវិញ\n"
                 f"ទំនាក់ Admin ប្រសិនបើចង់ដឹង: @smos_sne1",
                 parse_mode="HTML")
-            # Refund
-            add_bal(int(o["uid"]), float(o.get("price") or 0))
         except Exception as _e: logger.debug(f"[silent] {_e}")
         bot.send_message(uid,
             f"❌ <b>Rejected & Refunded</b>\n🆔 <code>{oid}</code>",
@@ -4336,6 +4349,8 @@ def handle_msg(message):
         smm_deps[dep_id]["bonus"]       = bonus
         smm_deps[dep_id]["auto_bonus"]  = auto_bonus
         _save(SMM_DEP_FILE, smm_deps)
+        if dep.get("promo") and promo_bonus > 0:
+            confirm_promo(dep["promo"], user_uid)
         new_b = bal(user_uid)
         msg = (f"✅ <b>ដាក់លុយបានជោគជ័យ!</b>\n"
                f"━━━━━━━━━━━━━━━━━━\n"
@@ -4375,8 +4390,34 @@ def handle_msg(message):
         ded_bal(uid, price)
         key = smm_api.get("key",""); api_url = smm_api.get("url","")
         res = None
+        api_failed = False; api_err_msg = ""
         if key and api_url and not s.get("manual"):
             res = _smm_api_post({"key":key,"action":"add","service":s["api_id"],"link":link,"quantity":qty})
+            if not res or not isinstance(res, dict) or res.get("error") or not res.get("order"):
+                api_failed = True
+                api_err_msg = (str(res.get("error")) if isinstance(res, dict) and res.get("error")
+                               else "SMM API មិនឆ្លើយតប ឬបញ្ជាទិញមិនជោគជ័យ")
+        # ── API Order បរាជ័យ → សងលុយវិញភ្លាម កុំឲ្យ User ខាតលុយឥតបានការ ──
+        if api_failed:
+            add_bal(uid, price)
+            bot.send_message(uid,
+                f"❌ <b>Order មិនជោគជ័យ!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📊 {s.get('label',slug)}\n"
+                f"⚠️ មូលហេតុ: <i>{api_err_msg}</i>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💰 លុយត្រូវបានសងវិញ: <b>${price:.2f}</b>\n"
+                f"💳 Balance: <b>${bal(uid):.2f}</b>\n"
+                f"សូមព្យាយាមម្ដងទៀត ឬទាក់ទង Admin។",
+                parse_mode="HTML", reply_markup=main_kb(uid))
+            try: bot.send_message(ADMIN_ID,
+                f"⚠️ <b>SMM Order បរាជ័យ (Auto-Refunded)</b>\n"
+                f"👤 <code>{uid_str}</code>\n"
+                f"📊 {s.get('label',slug)} | {qty:,} | ${price:.4f}\n"
+                f"⚠️ {api_err_msg}",
+                parse_mode="HTML")
+            except Exception as _e: logger.debug(f"[silent] {_e}")
+            return
         api_oid = str(res.get("order","")) if res else ""
         oid = _make_order_id()
         smm_orders[oid] = {
