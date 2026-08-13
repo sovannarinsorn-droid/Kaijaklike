@@ -280,6 +280,9 @@ CAMRAPID_CFG_FILE= _dpath("smm_camrapid.json")
 BAKONG_CFG_FILE = _dpath("smm_bakong.json")
 WEBHOOK_CFG_FILE = _dpath("smm_webhook.json")
 EMOJI_FILE      = _dpath("smm_emoji.json")
+REFERRAL_CFG_FILE = _dpath("smm_referral_cfg.json")
+REFERRAL_FILE     = _dpath("smm_referrals.json")
+POINTS_FILE       = _dpath("smm_points.json")
 
 def _load(path, default):
     try:
@@ -320,6 +323,21 @@ smm_deps     = _load(SMM_DEP_FILE,   {})
 # enabled: បើក/បិទ Auto Bonus, min_amount: ចំនួនអប្បបរមាដែលទទួលបាន Bonus,
 # pct: ភាគរយ Bonus (គិតលើចំនួនប្រាក់ដែលដាក់)។ កែបានពី Admin Menu → 🎁 Bonus ដាក់លុយ
 dep_bonus_cfg = _load(DEP_BONUS_FILE, {"enabled": True, "min_amount": 1.0, "pct": 5.0})
+
+# ── ណែនាំមិត្ត (Referral) — មិត្តភក្តិចូលរួមតាម Link → ដាក់លុយលើកដំបូង →
+# អ្នកណែនាំទទួល "ពិន្ទុ" (Points) — ដូរជាលុយចូល Balance បាន ឬសម្រាប់ទិញសេវាកំណត់ ──
+referral_cfg = _load(REFERRAL_CFG_FILE, {
+    "enabled": True,
+    "points_per_referral": 10,   # ណែនាំមិត្ត 1នាក់ (ដាក់លុយលើកដំបូង) = ប៉ុន្មានពិន្ទុ
+    "join_points": 0,            # ពិន្ទុភ្លាមៗពេលមិត្តចូល Link (មិនចាំបាច់ដាក់លុយ) — default 0
+    "convert_points": 10,        # អត្រាដូរ៖ រាល់ N ពិន្ទុ...
+    "convert_usd": 0.05,         # ...ដូរបានលុយ $X ចូល Balance
+})
+referrals    = _load(REFERRAL_FILE, {"referred_by": {}, "stats": {}, "rewarded": []})
+referrals.setdefault("referred_by", {})
+referrals.setdefault("stats", {})
+referrals.setdefault("rewarded", [])
+points = _load(POINTS_FILE, {})
 
 # ── Auto-seed TikTok Promote Khmer packages ──
 _TIKTOK_PACKAGES = [
@@ -763,6 +781,129 @@ def ded_bal(uid, amt):
 def set_bal(uid, amt):
     wallets[str(uid)] = round(float(amt), 2)
     _save(WALLETS_FILE, wallets)
+# ═══════════════════════════════════════════════════════════
+#  ពិន្ទុ (POINTS)
+# ═══════════════════════════════════════════════════════════
+def pts(uid): return int(points.get(str(uid), 0))
+def add_pts(uid, n):
+    points[str(uid)] = pts(uid) + int(n)
+    _save(POINTS_FILE, points)
+def ded_pts(uid, n):
+    points[str(uid)] = max(0, pts(uid) - int(n))
+    _save(POINTS_FILE, points)
+
+def _pts_per_usd():
+    """ប៉ុន្មានពិន្ទុស្មើនឹង $1 (យោងតាមអត្រាដូរ Admin កំណត់)"""
+    conv_pts = float(referral_cfg.get("convert_points", 10) or 10)
+    conv_usd = float(referral_cfg.get("convert_usd", 0.05) or 0.05)
+    if conv_usd <= 0: return 0
+    return conv_pts / conv_usd
+
+def _usd_to_points(usd):
+    """បម្លែងតម្លៃ $ ទៅជាចំនួនពិន្ទុត្រូវការ (សម្រាប់ទិញសេវាណាមួយដោយពិន្ទុ)"""
+    return int(round(float(usd) * _pts_per_usd()))
+
+def _points_to_usd(n):
+    conv_pts = float(referral_cfg.get("convert_points", 10) or 10)
+    conv_usd = float(referral_cfg.get("convert_usd", 0.05) or 0.05)
+    if conv_pts <= 0: return 0.0
+    return round(int(n) / conv_pts * conv_usd, 4)
+
+# ═══════════════════════════════════════════════════════════
+#  ណែនាំមិត្ត (REFERRAL) — ណែនាំមិត្ត 1នាក់ (ដាក់លុយលើកដំបូង) = ពិន្ទុ
+#  ពិន្ទុប្រើទិញសេវា TikTok Khmer ដោយផ្ទាល់ ឬដូរជាលុយចូល Balance
+# ═══════════════════════════════════════════════════════════
+def _referral_link(uid):
+    uname = _bot_username()
+    if not uname:
+        return None
+    return f"https://t.me/{uname}?start=ref_{uid}"
+
+def _referral_stat(uid):
+    return referrals["stats"].get(str(uid), {"count": 0, "points": 0, "list": []})
+
+def _handle_referral_start(uid, payload, is_new):
+    """ហៅពី /start ដើម្បីកត់ត្រាថា uid ថ្មីនេះមកពី referral link របស់អ្នកណា។
+    កត់ត្រាតែម្តងគត់ (uid ថ្មីមិនធ្លាប់ត្រូវបាន refer ពីមុន) ដើម្បីការពារការកេងចំណេញ។"""
+    if not payload or not payload.startswith("ref_"):
+        return
+    if not referral_cfg.get("enabled", True):
+        return
+    uid_str = str(uid)
+    if uid_str in referrals["referred_by"]:
+        return  # ធ្លាប់មាន referrer រួចហើយ
+    try:
+        ref_uid = int(payload[4:])
+    except (ValueError, TypeError):
+        return
+    if ref_uid == uid or not is_new:
+        return  # មិនអនុញ្ញាតឲ្យ refer ខ្លួនឯង ឬអ្នកប្រើចាស់ដែលធ្លាប់ចូល bot រួច
+    referrals["referred_by"][uid_str] = ref_uid
+    stat = referrals["stats"].setdefault(str(ref_uid), {"count": 0, "points": 0, "list": []})
+    stat["count"] += 1
+    stat["list"].append(uid)
+    _save(REFERRAL_FILE, referrals)
+    join_points = int(referral_cfg.get("join_points", 0) or 0)
+    if join_points > 0:
+        add_pts(uid, join_points)
+    per_ref = int(referral_cfg.get("points_per_referral", 10) or 0)
+    try:
+        bot.send_message(ref_uid,
+            f"👥 <b>មិត្តភក្តិថ្មីចូលរួម!</b>\n"
+            f"មិត្តម្នាក់បានចូល Kaijaklike តាម Link ណែនាំរបស់អ្នក។\n"
+            f"🎁 នៅពេលគេដាក់លុយលើកដំបូង អ្នកនឹងទទួល <b>{per_ref} ពិន្ទុ</b> ស្វ័យប្រវត្តិ!",
+            parse_mode="HTML")
+    except Exception as _e: logger.debug(f"[silent] {_e}")
+
+def _reward_referrer_on_deposit(user_uid):
+    """ហៅរាល់ពេលការដាក់លុយត្រូវបានបញ្ជាក់ (auto ឬ manual)។ ផ្តល់ពិន្ទុជូនអ្នកណែនាំ
+    តែម្តងគត់ ចំពោះការដាក់លុយ *លើកដំបូង* របស់មិត្តដែលគេណែនាំមក។"""
+    if not referral_cfg.get("enabled", True):
+        return
+    uid_str = str(user_uid)
+    ref_uid = referrals["referred_by"].get(uid_str)
+    if ref_uid is None or uid_str in referrals["rewarded"]:
+        return
+    reward = int(referral_cfg.get("points_per_referral", 10) or 0)
+    referrals["rewarded"].append(uid_str)
+    if reward > 0:
+        add_pts(ref_uid, reward)
+        stat = referrals["stats"].setdefault(str(ref_uid), {"count": 0, "points": 0, "list": []})
+        stat["points"] = int(stat.get("points", 0)) + reward
+    _save(REFERRAL_FILE, referrals)
+    if reward > 0:
+        try:
+            bot.send_message(ref_uid,
+                f"🎉 <b>ទទួលពិន្ទុណែនាំមិត្ត!</b>\n"
+                f"មិត្តដែលអ្នកណែនាំបានដាក់លុយលើកដំបូងហើយ 🎊\n"
+                f"🏆 ពិន្ទុទទួលបាន: <b>+{reward}</b>\n"
+                f"💎 ពិន្ទុសរុប: <b>{pts(ref_uid)}</b>\n"
+                f"👉 ប្រើពិន្ទុទិញ TikTok Khmer ឬដូរជាលុយចូល Balance!",
+                parse_mode="HTML", reply_markup=main_kb(ref_uid))
+        except Exception as _e: logger.debug(f"[silent] {_e}")
+
+def _referral_info_text(uid):
+    link = _referral_link(uid)
+    stat = _referral_stat(uid)
+    per_ref = int(referral_cfg.get("points_per_referral", 10) or 0)
+    conv_pts = int(referral_cfg.get("convert_points", 10) or 10)
+    conv_usd = float(referral_cfg.get("convert_usd", 0.05) or 0.05)
+    txt = (
+        f"👥 <b>ណែនាំមិត្ត — យកពិន្ទុទិញ TikTok Khmer ឬដូរជាលុយ!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📖 <b>របៀបលេង៖</b>\n"
+        f"1️⃣ ចែក Link ខាងក្រោមទៅមិត្តភក្តិ\n"
+        f"2️⃣ មិត្តចុច Link ចូល Bot ហើយចាប់ផ្តើមប្រើ\n"
+        f"3️⃣ ពេលមិត្តដាក់លុយលើកដំបូង អ្នកទទួល <b>{per_ref} ពិន្ទុ</b> ស្វ័យប្រវត្តិ\n"
+        f"4️⃣ យកពិន្ទុ 🎯 ទិញសេវា <b>🇰🇭 TikTok Khmer</b> ដោយផ្ទាល់ ឬ 🔄 ដូរជាលុយ\n"
+        f"   (រាល់ <b>{conv_pts} ពិន្ទុ</b> = <b>${conv_usd:.2f}</b>)\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 <b>Link ណែនាំរបស់អ្នក៖</b>\n<code>{link or '⏳ សូមព្យាយាមម្តងទៀត'}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👥 មិត្តបានណែនាំ: <b>{stat.get('count',0)}</b> នាក់\n"
+        f"💎 ពិន្ទុបច្ចុប្បន្ន: <b>{pts(uid)}</b>"
+    )
+    return txt
 
 # ═══════════════════════════════════════════════════════════
 #  PROMO CODE
@@ -1068,8 +1209,53 @@ def _top_report_text(period_days=30, top_n=5):
     lines.append("\n<i>* លុប Order rejected/canceled ចេញ</i>")
     return "\n".join(lines)
 
-@bot.message_handler(commands=["dailyreport"])
-def cmd_dailyreport(message):
+def daily_report_kb():
+    on   = daily_report_cfg.get("enabled", True)
+    hour = daily_report_cfg.get("hour", 8)
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("🟢 បើក" + (" ✅" if on else ""),  callback_data="dreport:on",  color=("success" if on else "active")),
+        InlineKeyboardButton("🔴 បិទ" + (" ✅" if not on else ""), callback_data="dreport:off", color=("danger" if not on else "active")),
+    )
+    kb.row(InlineKeyboardButton(f"⏰ ម៉ោង: {hour:02d}:00 (ខ្មែរ) — ចុចប្តូរ", callback_data="dreport:hour", color="active"))
+    kb.row(InlineKeyboardButton("📤 សាកល្បងផ្ញើឥឡូវ", callback_data="dreport:test", color="active"))
+    return kb
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("dreport:"))
+def cb_dreport(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID:
+        bot.answer_callback_query(call.id); return
+    action = call.data.split(":", 1)[1]
+    if action == "on":
+        daily_report_cfg["enabled"] = True; _save(DAILY_REPORT_FILE, daily_report_cfg)
+        bot.answer_callback_query(call.id, "✅ បើករួច")
+    elif action == "off":
+        daily_report_cfg["enabled"] = False; _save(DAILY_REPORT_FILE, daily_report_cfg)
+        bot.answer_callback_query(call.id, "🔴 បិទរួច")
+    elif action == "hour":
+        bot.answer_callback_query(call.id)
+        waiting[uid] = "await_dreport_hour"
+        bot.send_message(uid, "⏰ ផ្ញើម៉ោង (0-23) ដែលចង់ឲ្យផ្ញើ Daily Report (ម៉ោងកម្ពុជា):",
+                          reply_markup=cancel_kb())
+        return
+    elif action == "test":
+        bot.answer_callback_query(call.id, "📤 កំពុងផ្ញើ...")
+        txt = (f"⏰ <b>Daily Report (សាកល្បង)</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+               + _profit_report_text() + "\n\n" + _top_report_text(7))
+        bot.send_message(uid, txt, parse_mode="HTML")
+        return
+    try:
+        bot.edit_message_text(
+            f"⏰ <b>Daily Report Auto</b>\nស្ថានភាព: {'🟢 បើក' if daily_report_cfg.get('enabled', True) else '🔴 បិទ'}\n"
+            f"ម៉ោងផ្ញើ: {daily_report_cfg.get('hour', 8):02d}:00 (ម៉ោងកម្ពុជា)\n\n"
+            f"Bot នឹងផ្ញើ 📈 ចំណេញ + 🏆 Top Services/Clients មកអ្នកដោយស្វ័យប្រវត្តិរាល់ថ្ងៃ។",
+            chat_id=uid, message_id=call.message.message_id,
+            parse_mode="HTML", reply_markup=daily_report_kb())
+    except Exception as _e:
+        logger.debug(f"[silent] {_e}")
+
+
     """/dailyreport on|off|<hour 0-23> — គ្រប់គ្រង Auto Daily Report"""
     if message.from_user.id != ADMIN_ID:
         return
@@ -1632,6 +1818,7 @@ def _watch_deposit(uid, uid_str, dep_id, amount, reference):
             _save(SMM_DEP_FILE, smm_deps)
             if dep.get("promo") and promo_bonus > 0:
                 confirm_promo(dep["promo"], uid)
+            _reward_referrer_on_deposit(uid)
             new_b = bal(uid)
             msg = (f"✅ <b>ដាក់លុយបានជោគជ័យហើយ!</b> 🎉\n"
                    f"━━━━━━━━━━━━━━━━━━\n"
@@ -1809,14 +1996,16 @@ def main_kb(uid=None):
         kb.row(KeyboardButton("🛒 Order Service", emoji_id=e.get("order"), color="active"))
         kb.row(KeyboardButton("📋 Order History", emoji_id=e.get("history"), color="active"),
                KeyboardButton("🔍 Track Order",   emoji_id=e.get("track"),   color="active"))
-        kb.row(KeyboardButton("💬 Support", emoji_id=e.get("support"), color="active"))
+        kb.row(KeyboardButton("👥 Refer Friends", color="progress"),
+               KeyboardButton("💬 Support", emoji_id=e.get("support"), color="active"))
     else:
         kb.row(KeyboardButton("👤 គណនី",            emoji_id=e.get("account"), color="active"),
                KeyboardButton("💸 បញ្ចូលលុយ",       emoji_id=e.get("topup"),   color="progress"))
         kb.row(KeyboardButton("🛒 បញ្ជាទិញសេវា", emoji_id=e.get("order"), color="active"))
         kb.row(KeyboardButton("📋 ប្រវត្តិការបញ្ជាទិញ", emoji_id=e.get("history"), color="active"),
                KeyboardButton("🔍 តាមដានការបញ្ជាទិញ", emoji_id=e.get("track"),   color="active"))
-        kb.row(KeyboardButton("💬 ជំនួយ", emoji_id=e.get("support"), color="active"))
+        kb.row(KeyboardButton("👥 ណែនាំមិត្ត", color="progress"),
+               KeyboardButton("💬 ជំនួយ", emoji_id=e.get("support"), color="active"))
     return kb
 
 def admin_kb():
@@ -1833,12 +2022,14 @@ def admin_kb():
            KeyboardButton("📋 SMM Services",    color="active"))
     kb.row(KeyboardButton("📈 របាយការណ៍ចំណេញ", color="active"),
            KeyboardButton("🏆 Top Services/Clients", color="active"))
+    kb.row(KeyboardButton("⏰ Daily Report Auto", color="active"))
     kb.row("━━━ 💰 ហិរញ្ញវត្ថុ ━━━")
     kb.row(KeyboardButton("💰 កាបូបលុយ",   color="active"),
            KeyboardButton("💳 ប្រាក់បញ្ញើ", color="active"))
     kb.row(KeyboardButton("💸 បន្ថែមប្រាក់", color="active"),
            KeyboardButton("💔 កាត់ប្រាក់",  color="danger"))
     kb.row(KeyboardButton("🎁 Bonus ដាក់លុយ", color="progress"))
+    kb.row(KeyboardButton("👥 ណែនាំមិត្ត Bonus", color="progress"))
     kb.row("━━━ 👥 អ្នកប្រើ ━━━")
     kb.row(KeyboardButton("👥 អ្នកប្រើប្រាស់", color="active"),
            KeyboardButton("📊 ស្ថិតិ",       color="active"))
@@ -2253,7 +2444,13 @@ def _build_emoji_preview():
 def cmd_start(message):
     uid = message.chat.id
     waiting.pop(uid, None)
+    is_new = str(uid) not in users_db
     _track_user(message)
+    try:
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) > 1:
+            _handle_referral_start(uid, parts[1].strip(), is_new)
+    except Exception as _e: logger.debug(f"[silent] {_e}")
     if is_banned(uid):
         bot.send_message(uid, t(uid, "banned")); return
     if uid == ADMIN_ID:
@@ -2376,6 +2573,70 @@ def cb_depbonus(call):
             parse_mode="HTML", reply_markup=cancel_kb())
         return
 
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ptconvert:"))
+def cb_ptconvert(call):
+    uid = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    conv_pts = int(referral_cfg.get("convert_points", 10) or 10)
+    have = pts(uid)
+    batches = have // conv_pts if conv_pts > 0 else 0
+    if batches <= 0:
+        try: bot.send_message(uid,
+            f"❌ ពិន្ទុមិនគ្រប់ដូរទេ! (ត្រូវការ <b>{conv_pts}</b> ពិន្ទុ ដូរបានម្តង)\n💎 ពិន្ទុបច្ចុប្បន្ន: <b>{have}</b>",
+            parse_mode="HTML")
+        except Exception as _e: logger.debug(f"[silent] {_e}")
+        return
+    use_pts = batches * conv_pts
+    usd     = _points_to_usd(use_pts)
+    ded_pts(uid, use_pts)
+    add_bal(uid, usd)
+    try:
+        bot.send_message(uid,
+            f"✅ <b>ដូរពិន្ទុជោគជ័យ!</b>\n"
+            f"💎 ពិន្ទុប្រើ: <b>{use_pts}</b> → 💰 <b>+${usd:.2f}</b>\n"
+            f"💎 ពិន្ទុនៅសល់: <b>{pts(uid)}</b>\n"
+            f"💳 Balance: <b>${bal(uid):.2f}</b>",
+            parse_mode="HTML", reply_markup=main_kb(uid))
+    except Exception as _e: logger.debug(f"[silent] {_e}")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("refcfg:"))
+def cb_refcfg(call):
+    uid = call.message.chat.id
+    if uid != ADMIN_ID and uid not in sub_admins:
+        bot.answer_callback_query(call.id); return
+    action = call.data.split(":", 1)[1]
+    if action == "toggle":
+        referral_cfg["enabled"] = not referral_cfg.get("enabled", True)
+        _save(REFERRAL_CFG_FILE, referral_cfg)
+        bot.answer_callback_query(call.id, "✅ បានប្តូរស្ថានភាព")
+        btns = InlineKeyboardMarkup()
+        toggle_label = "🔴 បិទ Referral" if referral_cfg.get("enabled", True) else "🟢 បើក Referral"
+        btns.add(InlineKeyboardButton(toggle_label, callback_data="refcfg:toggle",
+                                      color=("danger" if referral_cfg.get("enabled", True) else "active")))
+        btns.add(InlineKeyboardButton("✏️ កែពិន្ទុ/អត្រាដូរ", callback_data="refcfg:edit", color="progress"))
+        try:
+            bot.edit_message_text(
+                f"👥 <b>ណែនាំមិត្ត (Referral)</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"ស្ថានភាព: {'🟢 បើក' if referral_cfg.get('enabled', True) else '🔴 បិទ'}\n"
+                f"🎁 ពិន្ទុ/ការណែនាំ (ដាក់លុយលើកដំបូង): <b>{int(referral_cfg.get('points_per_referral',10))} ពិន្ទុ</b>\n"
+                f"🎉 ពិន្ទុពេលចូល Link: <b>{int(referral_cfg.get('join_points',0))} ពិន្ទុ</b>\n"
+                f"🔄 អត្រាដូរ: <b>{int(referral_cfg.get('convert_points',10))} ពិន្ទុ = ${float(referral_cfg.get('convert_usd',0.05)):.2f}</b>",
+                chat_id=uid, message_id=call.message.message_id, parse_mode="HTML", reply_markup=btns)
+        except Exception as _e: logger.debug(f"[silent] {_e}")
+        return
+    if action == "edit":
+        bot.answer_callback_query(call.id)
+        waiting[uid] = {"step": "refcfg_edit"}
+        bot.send_message(uid,
+            f"✏️ <b>កែ Referral / ពិន្ទុ</b>\n"
+            f"បច្ចុប្បន្ន: ណែនាំ={int(referral_cfg.get('points_per_referral',10))}ពិន្ទុ, "
+            f"Join={int(referral_cfg.get('join_points',0))}ពិន្ទុ, "
+            f"ដូរ={int(referral_cfg.get('convert_points',10))}ពិន្ទុ=${float(referral_cfg.get('convert_usd',0.05)):.2f}\n\n"
+            f"ផ្ញើជា <code>ណែនាំ,join,ដូរពិន្ទុ,ដូរជាលុយ</code>\n"
+            f"ឧ: <code>10,0,10,0.05</code> (ណែនាំ1នាក់=10ពិន្ទុ, គ្មាន Join Bonus, ដូរ10ពិន្ទុ=$0.05)",
+            parse_mode="HTML", reply_markup=cancel_kb())
+        return
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dep:"))
 def cb_dep(call):
     uid     = call.message.chat.id
@@ -2458,7 +2719,11 @@ def cb_smmsvc(call):
     lang = get_lang(uid)
     # Price display
     if s.get("flat_price"):
-        price_line = f"💰 តម្លៃ: <b>${float(s['flat_price']):.2f} / order</b>"
+        if s.get("category") == "🇰🇭 TikTok Khmer":
+            price_line = (f"💎 តម្លៃ: <b>{_usd_to_points(float(s['flat_price']))} ពិន្ទុ</b> / order\n"
+                         f"💎 ពិន្ទុរបស់អ្នក: <b>{pts(uid)}</b>")
+        else:
+            price_line = f"💰 តម្លៃ: <b>${float(s['flat_price']):.2f} / order</b>"
     else:
         price_line = f"💰 {'តម្លៃ' if lang=='kh' else 'Price'}: <b>${sr:.2f}/1K</b>\n📏 Min: {s.get('min',10):,}  ·  Max: {s.get('max',100000):,}"
     desc_line = f"\n📋 {s['description']}" if s.get("description") else ""
@@ -2485,12 +2750,20 @@ def cb_smmqty(call):
     price = _smm_price_for_order(slug, qty)
     lang  = get_lang(uid)
     is_tiktok_promote = s.get("flat_price") and "tiktok" in slug.lower()
+    is_points_only = s.get("category") == "🇰🇭 TikTok Khmer"
+    points_needed = _usd_to_points(price) if is_points_only else 0
     if is_tiktok_promote:
+        if is_points_only:
+            price_line = (f"💎 ត្រូវការ: <b>{points_needed} ពិន្ទុ</b>\n"
+                          f"💎 ពិន្ទុរបស់អ្នក: <b>{pts(uid)}</b>\n"
+                          f"<i>👉 ទិញ TikTok Khmer ត្រូវប្រើពិន្ទុតែប៉ុណ្ណោះ — ណែនាំមិត្តដើម្បីទទួលពិន្ទុ!</i>")
+        else:
+            price_line = f"💰 តម្លៃ: <b>${price:.2f}</b>"
         link_prompt = (
             f"🔗 <b>ផ្ញើ Link វីដេអូ TikTok:</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"📊 {s.get('label',slug)}\n"
-            f"💰 តម្លៃ: <b>${price:.2f}</b>\n"
+            f"{price_line}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"⚠️ <b>សំខាន់!</b> បន្ទាប់ពី order:\n"
             f"1️⃣ ចូល TikTok Inbox\n"
@@ -2506,7 +2779,8 @@ def cb_smmqty(call):
             f"📊 {s.get('label',slug)}\n"
             f"💰 {qty:,} — <b>${price:.4f}</b>"
         )
-    waiting[uid] = {"step": "smm_link", "slug": slug, "qty": qty, "price": price}
+    waiting[uid] = {"step": "smm_link", "slug": slug, "qty": qty, "price": price,
+                     "is_points_only": is_points_only, "points_needed": points_needed}
     try:
         bot.edit_message_text(
             link_prompt,
@@ -2739,13 +3013,20 @@ def cb_manord(call):
             bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
         except Exception as _e: logger.debug(f"[silent] {_e}")
         # Refund — ដាច់ដោយឡែកពី Notify, ដើម្បីកុំឲ្យ User ខាតលុយបើផ្ញើសារទៅគាត់មិនចេញ (ឧ. Block Bot)
-        add_bal(int(o["uid"]), float(o.get("price") or 0))
+        o_is_points = o.get("is_points_only", False)
+        o_points    = int(o.get("points_needed", 0) or 0)
+        if o_is_points:
+            add_pts(int(o["uid"]), o_points)
+        else:
+            add_bal(int(o["uid"]), float(o.get("price") or 0))
         try:
             bot.send_message(int(o["uid"]),
                 f"❌ <b>Order ត្រូវបាន Reject!</b>\n"
                 f"🆔 <code>{oid}</code>\n"
-                f"💳  លុយបានដក (${ o.get('price',0):.4f}) ត្រូវបានសងវិញ\n"
-                f"ទំនាក់ Admin ប្រសិនបើចង់ដឹង: @smos_sne1",
+                + (f"💎 ពិន្ទុបានដក ({o_points}) ត្រូវបានសងវិញ\n"
+                   if o_is_points else
+                   f"💳  លុយបានដក (${ o.get('price',0):.4f}) ត្រូវបានសងវិញ\n")
+                + f"ទំនាក់ Admin ប្រសិនបើចង់ដឹង: @smos_sne1",
                 parse_mode="HTML")
         except Exception as _e: logger.debug(f"[silent] {_e}")
         bot.send_message(uid,
@@ -3951,6 +4232,33 @@ def handle_msg(message):
                     parse_mode="HTML", reply_markup=cancel_kb())
             return
 
+        if isinstance(step, dict) and step.get("step") == "refcfg_edit":
+            try:
+                parts = [p.strip() for p in text.replace("$", "").split(",")]
+                if len(parts) != 4:
+                    raise ValueError
+                per_ref    = int(float(parts[0]))
+                join_pts   = int(float(parts[1]))
+                conv_pts   = int(float(parts[2]))
+                conv_usd   = float(parts[3])
+                if per_ref < 0 or join_pts < 0 or conv_pts <= 0 or conv_usd < 0:
+                    raise ValueError
+                referral_cfg["points_per_referral"] = per_ref
+                referral_cfg["join_points"] = join_pts
+                referral_cfg["convert_points"] = conv_pts
+                referral_cfg["convert_usd"] = conv_usd
+                _save(REFERRAL_CFG_FILE, referral_cfg)
+                waiting.pop(uid, None)
+                bot.send_message(uid,
+                    f"✅ បានកែ!\n🎁 ណែនាំ: <b>{per_ref} ពិន្ទុ</b>\n🎉 Join: <b>{join_pts} ពិន្ទុ</b>\n"
+                    f"🔄 ដូរ: <b>{conv_pts} ពិន្ទុ = ${conv_usd:.2f}</b>",
+                    parse_mode="HTML", reply_markup=admin_kb())
+            except Exception:
+                bot.send_message(uid,
+                    "❌ ទម្រង់ខុស! សូមផ្ញើជា <code>ណែនាំ,join,ដូរពិន្ទុ,ដូរជាលុយ</code>\nឧ: <code>10,0,10,0.05</code>",
+                    parse_mode="HTML", reply_markup=cancel_kb())
+            return
+
         if isinstance(step, dict) and step.get("step") == "smm_set_profit":
             try:
                 pct = float(text)
@@ -3959,6 +4267,19 @@ def handle_msg(message):
                 bot.send_message(uid, f"✅ SMM Profit <b>{pct:.0f}%</b>",
                                  parse_mode="HTML", reply_markup=admin_kb())
             except: bot.send_message(uid, "❌ ត្រូវជាលេខ")
+            return
+
+        if step == "await_dreport_hour":
+            try:
+                hour = int(text.strip())
+                if not (0 <= hour <= 23):
+                    raise ValueError
+                daily_report_cfg["hour"] = hour; _save(DAILY_REPORT_FILE, daily_report_cfg)
+                waiting.pop(uid, None)
+                bot.send_message(uid, f"✅ កំណត់ម៉ោងផ្ញើ Daily Report ទៅ {hour:02d}:00 (ម៉ោងកម្ពុជា)",
+                                 parse_mode="HTML", reply_markup=daily_report_kb())
+            except (ValueError, TypeError):
+                bot.send_message(uid, "❌ ត្រូវជាលេខ 0-23", reply_markup=cancel_kb())
             return
 
         # ── Manual service: step 1 label ──
@@ -4331,6 +4652,14 @@ def handle_msg(message):
         if text == "🏆 Top Services/Clients":
             bot.send_message(uid, _top_report_text(), parse_mode="HTML", reply_markup=admin_kb()); return
 
+        if text == "⏰ Daily Report Auto":
+            bot.send_message(uid,
+                f"⏰ <b>Daily Report Auto</b>\nស្ថានភាព: {'🟢 បើក' if daily_report_cfg.get('enabled', True) else '🔴 បិទ'}\n"
+                f"ម៉ោងផ្ញើ: {daily_report_cfg.get('hour', 8):02d}:00 (ម៉ោងកម្ពុជា)\n\n"
+                f"Bot នឹងផ្ញើ 📈 ចំណេញ + 🏆 Top Services/Clients មកអ្នកដោយស្វ័យប្រវត្តិរាល់ថ្ងៃ។",
+                parse_mode="HTML", reply_markup=daily_report_kb())
+            return
+
         if text == "🎁 Bonus ដាក់លុយ":
             btns = InlineKeyboardMarkup()
             toggle_label = "🔴 បិទ Auto Bonus" if dep_bonus_cfg.get("enabled", True) else "🟢 បើក Auto Bonus"
@@ -4342,6 +4671,27 @@ def handle_msg(message):
                 f"👉 អ្នកប្រើដាក់លុយចាប់ពី <b>${float(dep_bonus_cfg.get('min_amount',1.0)):.2f}</b> ឡើងទៅ "
                 f"នឹងទទួល Bonus <b>{float(dep_bonus_cfg.get('pct',5.0)):.0f}%</b> បញ្ចូល Balance ដោយស្វ័យប្រវត្តិ "
                 f"(បូកបន្ថែមលើ Promo Code ប្រសិនបើមាន)។",
+                parse_mode="HTML", reply_markup=btns); return
+
+        if text == "👥 ណែនាំមិត្ត Bonus":
+            btns = InlineKeyboardMarkup()
+            toggle_label = "🔴 បិទ Referral" if referral_cfg.get("enabled", True) else "🟢 បើក Referral"
+            btns.add(InlineKeyboardButton(toggle_label, callback_data="refcfg:toggle",
+                                          color=("danger" if referral_cfg.get("enabled", True) else "active")))
+            btns.add(InlineKeyboardButton("✏️ កែពិន្ទុ/អត្រាដូរ", callback_data="refcfg:edit", color="progress"))
+            total_referrers = len(referrals["stats"])
+            total_invited   = sum(s.get("count", 0) for s in referrals["stats"].values())
+            total_pts_paid  = sum(s.get("points", 0) for s in referrals["stats"].values())
+            bot.send_message(uid,
+                f"👥 <b>ណែនាំមិត្ត (Referral)</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"ស្ថានភាព: {'🟢 បើក' if referral_cfg.get('enabled', True) else '🔴 បិទ'}\n"
+                f"🎁 ពិន្ទុ/ការណែនាំ (ដាក់លុយលើកដំបូង): <b>{int(referral_cfg.get('points_per_referral',10))} ពិន្ទុ</b>\n"
+                f"🎉 ពិន្ទុពេលចូល Link: <b>{int(referral_cfg.get('join_points',0))} ពិន្ទុ</b>\n"
+                f"🔄 អត្រាដូរ: <b>{int(referral_cfg.get('convert_points',10))} ពិន្ទុ = ${float(referral_cfg.get('convert_usd',0.05)):.2f}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 អ្នកណែនាំសរុប: <b>{total_referrers}</b>\n"
+                f"👥 មិត្តត្រូវបាននាំចូល: <b>{total_invited}</b>\n"
+                f"💎 ពិន្ទុបានចេញសរុប: <b>{total_pts_paid}</b>",
                 parse_mode="HTML", reply_markup=btns); return
 
         if text == "💰 ឆែកលុយ API":
@@ -4786,6 +5136,7 @@ def handle_msg(message):
         _save(SMM_DEP_FILE, smm_deps)
         if dep.get("promo") and promo_bonus > 0:
             confirm_promo(dep["promo"], user_uid)
+        _reward_referrer_on_deposit(user_uid)
         new_b = bal(user_uid)
         msg = (f"✅ <b>ដាក់លុយបានជោគជ័យ!</b>\n"
                f"━━━━━━━━━━━━━━━━━━\n"
@@ -4807,6 +5158,8 @@ def handle_msg(message):
         slug  = step["slug"]
         qty   = step["qty"]
         price = step["price"]
+        is_points_only = step.get("is_points_only", False)
+        points_needed  = step.get("points_needed", 0)
         link  = text.strip()
         s = smm_services.get(slug)
         if not s:
@@ -4818,11 +5171,19 @@ def handle_msg(message):
             bot.send_message(uid, err, parse_mode="HTML", reply_markup=cancel_kb())
             return
         waiting.pop(uid, None)
-        if bal(uid) < price:
-            bot.send_message(uid,
-                f"❌ Balance មិនគ្រប់!\n💳 ${bal(uid):.2f} | Need: ${price:.2f}",
-                parse_mode="HTML", reply_markup=main_kb(uid)); return
-        ded_bal(uid, price)
+        if is_points_only:
+            if pts(uid) < points_needed:
+                bot.send_message(uid,
+                    f"❌ ពិន្ទុមិនគ្រប់!\n💎 {pts(uid)} | ត្រូវការ: {points_needed} ពិន្ទុ\n"
+                    f"👉 ណែនាំមិត្តដើម្បីទទួលពិន្ទុបន្ថែម (👥 ណែនាំមិត្ត)",
+                    parse_mode="HTML", reply_markup=main_kb(uid)); return
+            ded_pts(uid, points_needed)
+        else:
+            if bal(uid) < price:
+                bot.send_message(uid,
+                    f"❌ Balance មិនគ្រប់!\n💳 ${bal(uid):.2f} | Need: ${price:.2f}",
+                    parse_mode="HTML", reply_markup=main_kb(uid)); return
+            ded_bal(uid, price)
         key = smm_api.get("key",""); api_url = smm_api.get("url","")
         res = None
         api_failed = False; api_err_msg = ""
@@ -4832,23 +5193,27 @@ def handle_msg(message):
                 api_failed = True
                 api_err_msg = (str(res.get("error")) if isinstance(res, dict) and res.get("error")
                                else "SMM API មិនឆ្លើយតប ឬបញ្ជាទិញមិនជោគជ័យ")
-        # ── API Order បរាជ័យ → សងលុយវិញភ្លាម កុំឲ្យ User ខាតលុយឥតបានការ ──
+        # ── API Order បរាជ័យ → សងលុយ/ពិន្ទុវិញភ្លាម កុំឲ្យ User ខាតឥតបានការ ──
         if api_failed:
-            add_bal(uid, price)
+            if is_points_only:
+                add_pts(uid, points_needed)
+            else:
+                add_bal(uid, price)
             bot.send_message(uid,
                 f"❌ <b>Order មិនជោគជ័យ!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📊 {s.get('label',slug)}\n"
                 f"⚠️ មូលហេតុ: <i>{api_err_msg}</i>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"💰 លុយត្រូវបានសងវិញ: <b>${price:.2f}</b>\n"
-                f"💳 Balance: <b>${bal(uid):.2f}</b>\n"
-                f"សូមព្យាយាមម្ដងទៀត ឬទាក់ទង Admin។",
+                + (f"💎 ពិន្ទុត្រូវបានសងវិញ: <b>{points_needed}</b>\n💎 ពិន្ទុ: <b>{pts(uid)}</b>\n"
+                   if is_points_only else
+                   f"💰 លុយត្រូវបានសងវិញ: <b>${price:.2f}</b>\n💳 Balance: <b>${bal(uid):.2f}</b>\n")
+                + f"សូមព្យាយាមម្ដងទៀត ឬទាក់ទង Admin។",
                 parse_mode="HTML", reply_markup=main_kb(uid))
             try: bot.send_message(ADMIN_ID,
                 f"⚠️ <b>SMM Order បរាជ័យ (Auto-Refunded)</b>\n"
                 f"👤 <code>{uid_str}</code>\n"
-                f"📊 {s.get('label',slug)} | {qty:,} | ${price:.4f}\n"
+                f"📊 {s.get('label',slug)} | {qty:,} | " + (f"{points_needed}ពិន្ទុ" if is_points_only else f"${price:.4f}") + f"\n"
                 f"⚠️ {api_err_msg}",
                 parse_mode="HTML")
             except Exception as _e: logger.debug(f"[silent] {_e}")
@@ -4858,7 +5223,8 @@ def handle_msg(message):
         smm_orders[oid] = {
             "uid":uid_str,"slug":slug,"label":s.get("label",slug),
             "qty":qty,"price":price,"link":link,"api_order_id":api_oid,
-            "status":"pending","ts":int(time.time())
+            "status":"pending","ts":int(time.time()),
+            "is_points_only": is_points_only, "points_needed": points_needed
         }
         _save(SMM_ORD_FILE, smm_orders)
 
@@ -4866,21 +5232,21 @@ def handle_msg(message):
         is_manual = s.get("manual", False)
 
         if is_tiktok_promote:
+            paid_line = (f"💎 <b>{points_needed} ពិន្ទុ</b>\n💎 ពិន្ទុនៅសល់: <b>{pts(uid)}</b>"
+                        if is_points_only else f"💰 <b>${price:.2f}</b>\n💳 Balance: <b>${bal(uid):.2f}</b>")
             bot.send_message(uid,
                 f"✅ <b>Order TikTok Promote បានជោគជ័យ!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"🆔 <code>{oid}</code>\n"
                 f"🎵 {s.get('label',slug)}\n"
-                f"💰 <b>${price:.2f}</b>\n"
+                f"{paid_line}\n"
                 f"🔗 <code>{link}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"⏳ <b>ចាំ Admin ដំណើរការ 5-15 នាទី</b>\n\n"
                 f"📱 <b>រំឭក!</b> ចូល TikTok:\n"
                 f"Inbox → System notifications\n"
                 f"→ Promote Assistant → <b>Respond</b>\n"
-                f"→ Authorize → <b>Confirm</b> ✅\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"💳 Balance: <b>${bal(uid):.2f}</b>",
+                f"→ Authorize → <b>Confirm</b> ✅",
                 parse_mode="HTML", reply_markup=main_kb(uid))
         else:
             bot.send_message(uid,
@@ -4901,8 +5267,8 @@ def handle_msg(message):
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"🆔 <code>{oid}</code>\n"
                 f"👤 <code>{uid_str}</code>\n"
-                f"💰 <b>${price:.2f}</b>\n"
-                f"🔗 <code>{link}</code>\n"
+                + (f"💎 <b>{points_needed} ពិន្ទុ</b>\n" if is_points_only else f"💰 <b>${price:.2f}</b>\n")
+                + f"🔗 <code>{link}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📋 <b>Admin Steps:</b>\n"
                 f"1️⃣ ចូល TikTok → video → Promote\n"
@@ -5025,6 +5391,7 @@ def handle_msg(message):
                 f"🆔 ID: <code>{uid_str}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"💳 Balance: <b>${b:.2f}</b>\n"
+                f"💎 ពិន្ទុ: <b>{pts(uid)}</b>\n"
                 f"✅ សរុបដាក់: <b>${confirmed:.2f}</b>\n"
                 f"⏳ រង់ចាំ: <b>${pending:.2f}</b>\n"
                 f"📦 Orders: <b>{total_orders}</b>"
@@ -5037,6 +5404,7 @@ def handle_msg(message):
                 f"🆔 ID: <code>{uid_str}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"💳 Balance: <b>${b:.2f}</b>\n"
+                f"💎 Points: <b>{pts(uid)}</b>\n"
                 f"✅ Total deposited: <b>${confirmed:.2f}</b>\n"
                 f"⏳ Pending: <b>${pending:.2f}</b>\n"
                 f"📦 Orders: <b>{total_orders}</b>"
@@ -5048,6 +5416,11 @@ def handle_msg(message):
             "🔍 <b>តាមដាន Order</b>\nផ្ញើ Order ID (ឧ: KZ12345):",
             parse_mode="HTML", reply_markup=cancel_kb())
         waiting[uid] = "track_order"; return
+
+    if text in ("👥 Refer Friends", "👥 ណែនាំមិត្ត"):
+        btns = InlineKeyboardMarkup()
+        btns.add(InlineKeyboardButton("🔄 ដូរពិន្ទុ → លុយ", callback_data="ptconvert:all", color="active"))
+        bot.send_message(uid, _referral_info_text(uid), parse_mode="HTML", reply_markup=btns); return
 
     if text in ("💬 Support", "💬 ជំនួយ"):
         lang = get_lang(uid)
