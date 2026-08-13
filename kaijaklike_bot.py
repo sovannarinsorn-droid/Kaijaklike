@@ -12,13 +12,15 @@
 """
 
 import json, logging, time, re, threading, io, os, sys, subprocess, datetime
+from decimal import Decimal as _Decimal, ROUND_HALF_UP as _ROUND_HALF_UP
 import requests as http_req
 from dotenv import load_dotenv
 load_dotenv()
 import telebot
 from telebot.types import (
     ReplyKeyboardMarkup, KeyboardButton as _KB_orig,
-    InlineKeyboardMarkup, InlineKeyboardButton as _IKB_orig
+    InlineKeyboardMarkup, InlineKeyboardButton as _IKB_orig,
+    MessageEntity as _MessageEntity
 )
 import re as _re
 
@@ -944,15 +946,81 @@ def _smm_sell_rate(cost, slug=None):
     if s.get("custom_price"): return float(s["custom_price"])
     return round(float(cost) * (1 + _smm_profit_pct() / 100), 4)
 
+def _round_price_01(x):
+    """បង្គត់តម្លៃទៅខ្ទង់ទសភាគទី 1 (0.1$) ដោយប្រើ round-half-up ធម្មតា — ខ្ទង់
+    ទសភាគទី 2 ≥ 5 ត្រូវបង្គត់ឡើង, < 5 បង្គត់ចុះ។ ឧ. $1.23 → $1.2, $1.25 → $1.3,
+    $1.27 → $1.3 ។ ប្រើ Decimal ដើម្បីជៀសវាង floating-point rounding ខុសឆ្គង
+    (round() ធម្មតារបស់ Python ប្រើ banker's rounding ដែលអាចបង្គត់ខុសពីអ្វី
+    ដែលមនុស្សរំពឹងទុក)។"""
+    return float(_Decimal(str(x)).quantize(_Decimal("0.1"), rounding=_ROUND_HALF_UP))
+
 def _smm_price_for_order(slug, qty):
     """Get actual price for an order (handles flat_price services)"""
     s = smm_services.get(slug, {})
     if s.get("flat_price"):
-        return float(s["flat_price"])  # flat: always $0.99 regardless of qty
+        return float(s["flat_price"])  # flat: តម្លៃកំណត់ដោយ Admin ដោយផ្ទាល់ (ឧ. $0.99) —
+                                        # មិនបង្គត់ទេ ព្រោះជាតម្លៃចិត្តសាស្ត្រដែល Admin
+                                        # ចង់ឲ្យជាក់លាក់ តម្លៃប្រភេទនេះមិនមែនគណនាចេញទេ
     sr = _smm_sell_rate(s.get("cost_rate", 0), slug)
-    return round(sr * qty / 1000, 4)
+    return _round_price_01(round(sr * qty / 1000, 4))
 
-def _smm_api_post(params, timeout=25):
+def _smm_cost_for_order(slug, qty):
+    """គណនាតម្លៃដើម (Provider cost) របស់ Order មួយ — ប្រើ cost_rate បច្ចុប្បន្ន
+    របស់ Service នោះ។ សម្រាប់ Flat/Manual item (flat_price) cost_rate តែងតែ 0
+    ដូច្នេះ profit = 100% នៃតម្លៃលក់ (ដូចគ្នានឹងវិធីគណនា sell-rate ផ្សេងទៀត
+    ក្នុងកូដ — ព្រោះមិនមានតាមដាន cost ដោយឡែកសម្រាប់ទំនិញទាំងនេះ)។"""
+    s = smm_services.get(slug, {})
+    if s.get("flat_price"):
+        return 0.0
+    cost_rate = float(s.get("cost_rate", 0) or 0)
+    return round(cost_rate * qty / 1000, 4)
+
+def _profit_sum(period_days=None):
+    """សរុប (revenue, cost, profit, count, margin%) របស់ SMM Orders ក្នុងចន្លោះ
+    period_days ថ្ងៃចុងក្រោយ (None = គ្រប់ពេល)។ Order ស្ថានភាព rejected/canceled
+    ត្រូវលើកលែង ព្រោះលុយត្រូវបានសងវិញ — មិនមែនចំណេញពិតប្រាកដទេ។"""
+    cutoff = int(time.time()) - period_days * 86400 if period_days else 0
+    revenue = cost = 0.0
+    count = 0
+    for o in smm_orders.values():
+        if o.get("status") in ("rejected", "canceled"):
+            continue
+        if o.get("ts", 0) < cutoff:
+            continue
+        price = float(o.get("price", 0) or 0)
+        revenue += price
+        cost += _smm_cost_for_order(o.get("slug", ""), o.get("qty", 0))
+        count += 1
+    profit = revenue - cost
+    margin = (profit / revenue * 100) if revenue else 0.0
+    return revenue, cost, profit, count, margin
+
+def _profit_report_text():
+    """សាងសង់របាយការណ៍ចំណេញពេញលេញ — ថ្ងៃនេះ / សប្តាហ៍នេះ / ខែនេះ / សរុប។"""
+    lines = ["💹 <b>របាយការណ៍ចំណេញ (Profit Report)</b>", "━━━━━━━━━━━━━━━━━━"]
+    for label, days in [("📅 ថ្ងៃនេះ (24ម៉ោង)", 1),
+                         ("🗓️ សប្តាហ៍នេះ (7ថ្ងៃ)", 7),
+                         ("📆 ខែនេះ (30ថ្ងៃ)", 30)]:
+        rev, cost, profit, cnt, margin = _profit_sum(days)
+        lines.append(
+            f"\n{label}\n"
+            f"  🛒 Orders: <b>{cnt}</b>  |  💵 លក់: <b>${rev:.2f}</b>\n"
+            f"  📦 ដើម: <b>${cost:.2f}</b>  |  💹 ចំណេញ: <b>${profit:.2f}</b> ({margin:.1f}%)")
+    rev, cost, profit, cnt, margin = _profit_sum(None)
+    lines.append(
+        f"\n📊 <b>សរុបគ្រប់ពេល</b>\n"
+        f"  🛒 Orders: <b>{cnt}</b>  |  💵 លក់: <b>${rev:.2f}</b>\n"
+        f"  📦 ដើម: <b>${cost:.2f}</b>  |  💹 ចំណេញ: <b>${profit:.2f}</b> ({margin:.1f}%)")
+    lines.append("\n<i>* លុប Order rejected/canceled ចេញ (បានសងលុយវិញ) · Cost គិតតាមអត្រាបច្ចុប្បន្នរបស់ Service</i>")
+    return "\n".join(lines)
+
+@bot.message_handler(commands=["profit"])
+def cmd_profit(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    bot.reply_to(message, _profit_report_text(), parse_mode="HTML")
+
+
     url = smm_api.get("url", "")
     if not url: return None
     try:
@@ -1674,6 +1742,7 @@ def admin_kb():
            KeyboardButton("💰 កែតម្លៃ",       color="progress"))
     kb.row(KeyboardButton("💹 ប្រាក់ចំណេញ SMM", color="active"),
            KeyboardButton("📋 SMM Services",    color="active"))
+    kb.row(KeyboardButton("📈 របាយការណ៍ចំណេញ", color="active"))
     kb.row("━━━ 💰 ហិរញ្ញវត្ថុ ━━━")
     kb.row(KeyboardButton("💰 កាបូបលុយ",   color="active"),
            KeyboardButton("💳 ប្រាក់បញ្ញើ", color="active"))
@@ -1705,6 +1774,7 @@ def emoji_menu_kb():
     kb.add(InlineKeyboardButton("✏️ កំណត់ Emoji ថ្មី", callback_data="emojimenu:set", color="progress"))
     kb.add(InlineKeyboardButton("🔄 ប្តូរ Emoji ដែលមានស្រាប់", callback_data="emojimenu:change", color="progress"))
     kb.add(InlineKeyboardButton("📊 មើលស្ថានភាព",     callback_data="emojimenu:list", color="active"))
+    kb.add(InlineKeyboardButton("🎨 មើលសាកល្បង (Preview)", callback_data="emojimenu:preview", color="active"))
     kb.add(InlineKeyboardButton("🆔 យក Emoji ID",       callback_data="emojimenu:id", color="active"))
     return kb
 
@@ -2059,6 +2129,30 @@ def cmd_emojilist(message):
     if message.from_user.id != ADMIN_ID:
         return
     bot.reply_to(message, _emoji_status_text(), parse_mode="HTML")
+
+# ═══════════════════════════════════════════════════════════
+#  PREMIUM EMOJI PREVIEW (admin-only) — បង្ហាញ icon ជាក់ស្តែងទាំងអស់ក្នុងសារ
+#  តែមួយ ដើម្បីឲ្យ Admin មើលឃើញផ្ទាល់ភ្នែកថា emoji នីមួយៗត្រូវបានប្តូរ
+#  ត្រឹមត្រូវឬអត់ (មិនមែនគ្រាន់តែ checkmark ជាអក្សរនៅក្នុង /emojilist ទេ)
+# ═══════════════════════════════════════════════════════════
+def _build_emoji_preview():
+    """សាងសង់ (text, entities, count) សម្រាប់បង្ហាញ Premium Emoji ទាំងអស់ដែល
+    បានកំណត់រួម គ្នាក្នុងសារតែមួយ។ offset/length គិតជា UTF-16 code units
+    ដូចលក្ខណៈពិតរបស់ MessageEntity (សំខាន់ណាស់សម្រាប់ flag emoji ដូច 🇰🇭
+    ដែលមាន 4 units ក្រៅពី 1)."""
+    done = [(ch, eid) for ch, eid in EMOJI_MAP.items() if eid]
+    if not done:
+        return "", [], 0
+    parts, entities, offset = [], [], 0
+    for ch, eid in done:
+        parts.append(ch)
+        length = len(ch.encode("utf-16-le")) // 2
+        entities.append(_MessageEntity(type="custom_emoji", offset=offset,
+                                        length=length, custom_emoji_id=eid))
+        offset += length + 1  # +1 សម្រាប់ដកឃ្លាបំបែក
+        parts.append(" ")
+    text = "".join(parts).rstrip()
+    return text, entities, len(done)
 
 # ═══════════════════════════════════════════════════════════
 #  START
@@ -3099,6 +3193,18 @@ def cb_emojimenu(call):
             parse_mode="HTML", reply_markup=cancel_kb())
     elif action == "list":
         bot.send_message(uid, _emoji_status_text(), parse_mode="HTML", reply_markup=admin_kb())
+    elif action == "preview":
+        text, entities, n = _build_emoji_preview()
+        if n == 0:
+            bot.send_message(uid, "⚠️ មិនទាន់មាន Emoji ណាមួយបានកំណត់ទេ។",
+                reply_markup=emoji_menu_kb())
+            return
+        bot.send_message(uid,
+            f"🎨 <b>មើលសាកល្បង Premium Emoji</b> ({n} icon)\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👇 នេះជារូបរាងជាក់ស្តែងនៃ icon ដែលបានកំណត់:",
+            parse_mode="HTML")
+        bot.send_message(uid, text, entities=entities, reply_markup=emoji_menu_kb())
     elif action == "id":
         waiting[uid] = "await_emojiid"
         bot.send_message(uid,
@@ -4126,6 +4232,9 @@ def handle_msg(message):
             bot.send_message(uid,
                 f"💹 <b>ប្រាក់ចំណេញ SMM: {_smm_profit_pct():.0f}%</b>\nផ្ញើ % ថ្មី:",
                 parse_mode="HTML", reply_markup=cancel_kb()); return
+
+        if text == "📈 របាយការណ៍ចំណេញ":
+            bot.send_message(uid, _profit_report_text(), parse_mode="HTML", reply_markup=admin_kb()); return
 
         if text == "🎁 Bonus ដាក់លុយ":
             btns = InlineKeyboardMarkup()
