@@ -1925,6 +1925,24 @@ def _extract_custom_emoji(src):
             out.append((ch, str(e.custom_emoji_id)))
     return out
 
+def _norm_vs(s):
+    """ដក Variation Selector-16 (U+FE0F) ចេញ សម្រាប់ធៀបធៀប emoji ដោយអត់ខ្ជិលរឹង —
+    Telegram ពេលខ្លះត្រឡប់ underlying char ដោយគ្មាន VS16 ខណៈ EMOJI_MAP key មាន
+    VS16 (ឬផ្ទុយមកវិញ), ធ្វើឲ្យការធៀប == ត្រង់ៗពីមុន ខុសទាំងដែលអ្នកប្រើជ្រើសត្រូវ
+    emoji ត្រឹមត្រូវ (bug ដើម្បីនាំឲ្យបង្ហាញ 'Emoji មិនត្រូវគ្នា!' ខុសឆ្គង)។"""
+    return (s or "").replace("\ufe0f", "")
+
+def _emoji_key_lookup(ch):
+    """រក key ពិតប្រាកដក្នុង EMOJI_MAP ដែលត្រូវនឹង ch ដោយអត់ខ្ជិលរឹងចំពោះ VS16។
+    ត្រឡប់ None បើរកមិនឃើញសោះ។"""
+    if ch in EMOJI_MAP:
+        return ch
+    norm = _norm_vs(ch)
+    for k in EMOJI_MAP:
+        if _norm_vs(k) == norm:
+            return k
+    return None
+
 # ═══════════════════════════════════════════════════════════
 #  PREMIUM EMOJI ID FINDER (admin-only utility)
 #  Reply command នេះទៅសារដែលមាន premium emoji — bot បង្ហាញទាំង custom_emoji_id
@@ -1971,9 +1989,11 @@ def _apply_setemojis(src_msg):
     lines = ["✅ <b>បានកំណត់ Emoji ដោយស្វ័យប្រវត្តិ:</b>\n"]
     unknown = []
     for ch, eid in found:
-        if ch in EMOJI_MAP:
-            EMOJI_MAP[ch] = eid
-            lines.append(f"{ch} → <code>{eid}</code>")
+        key = _emoji_key_lookup(ch)   # ✅ ធៀបដោយអត់ខ្ជិលរឹង VS16 (មុននេះ `ch in EMOJI_MAP`
+                                       # ត្រង់ៗ ធ្វើឲ្យខកខានផ្គូផ្គង emoji ត្រឹមត្រូវ)
+        if key:
+            EMOJI_MAP[key] = eid
+            lines.append(f"{key} → <code>{eid}</code>")
         else:
             unknown.append((ch, eid))
     _save(EMOJI_FILE, EMOJI_MAP)
@@ -3081,6 +3101,7 @@ def cb_emojipick(call):
     if uid != ADMIN_ID:
         bot.answer_callback_query(call.id, "🚫 Master Admin only!"); return
     ch = call.data.split(":", 1)[1]
+    ch = _emoji_key_lookup(ch) or ch
     if ch not in EMOJI_MAP:
         bot.answer_callback_query(call.id, "❌ Emoji នេះលែងមាន!"); return
     bot.answer_callback_query(call.id)
@@ -3127,7 +3148,7 @@ def handle_photo(message):
                     f"❌ រកមិនឃើញ premium emoji ក្នុងសារនោះទេ។ ផ្ញើ Premium version របស់ {ch} ម្តងទៀត ឬ ✕ Cancel។",
                     parse_mode="HTML", reply_markup=cancel_kb())
                 return
-            exact = [eid for c, eid in found if c == ch]
+            exact = [eid for c, eid in found if _norm_vs(c) == _norm_vs(ch)]  # ✅ tolerant of VS16 diffs
             if not exact:
                 # ⚠️ គ្មាន underlying char ណាដូច ch ដែលកំពុងកំណត់ទេ — កុំទាយ/ចាប់ខុស
                 # (មុននេះ code ចាប់យក found[0] ដោយស្វ័យប្រវត្តិ ធ្វើឲ្យ emoji ខុសទំនង
@@ -3250,7 +3271,7 @@ def handle_msg(message):
                 return  # stay in loop, waiting untouched
             # ត្រូវការ exact match ទៅនឹង underlying char របស់ ch ដែលកំពុងកំណត់ —
             # កុំចាប់យក emoji ដំបូងគេប្រសិនបើមិនត្រូវគ្នា (ធ្លាប់បង្កើត mismatch)
-            exact = [eid for c, eid in found if c == ch]
+            exact = [eid for c, eid in found if _norm_vs(c) == _norm_vs(ch)]  # ✅ tolerant of VS16 diffs
             if not exact:
                 detected = ", ".join(f"{c}" for c, _ in found)
                 bot.send_message(uid,
