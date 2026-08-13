@@ -1923,6 +1923,18 @@ def _extract_custom_emoji(src):
         ch = _utf16_slice(text, e.offset, e.length)
         if ch:
             out.append((ch, str(e.custom_emoji_id)))
+    # ── ក៏ចាប់យក Premium Emoji ដែលផ្ញើមកជា "Sticker" ដោយផ្ទាល់ (content_type=
+    # "sticker") ផងដែរ — ករណីនេះកើតឡើងញឹកញាប់ ពេលអ្នកប្រើផ្ញើ custom emoji
+    # តែម្នាក់ឯងពី emoji panel ដោយមិនវាយជាអក្សរ ឬ Forward វា ដោយខ្លួនវាមិនមែន
+    # text entity ទេ តែជា sticker.type == "custom_emoji" វិញ។ បើមិនចាប់ករណីនេះ
+    # ទេ សារនោះនឹងធ្លាក់ចូល content_type ដែលគ្មាន handler ណាដោះស្រាយសោះ —
+    # បណ្តាលឲ្យ Bot ស្ងាត់ស្ងៀមទាំងស្រុង គ្មាន reply អ្វីទាំងអស់។
+    sticker = getattr(src, "sticker", None)
+    if sticker is not None and getattr(sticker, "type", None) == "custom_emoji" \
+            and getattr(sticker, "custom_emoji_id", None):
+        ch = sticker.emoji or ""
+        if ch:
+            out.append((ch, str(sticker.custom_emoji_id)))
     return out
 
 def _norm_vs(s):
@@ -3221,6 +3233,87 @@ def handle_photo(message):
                 "រូបនេះនឹងបង្ហាញពេល User ចុច /start",
                 parse_mode="HTML", reply_markup=admin_kb())
 
+
+# ═══════════════════════════════════════════════════════════
+#  STICKER HANDLER — ចាំបាច់សម្រាប់ Premium Emoji ដែលផ្ញើមកជា
+#  content_type="sticker" (sticker.type == "custom_emoji") ។ ដោយគ្មាន
+#  handler នេះ សារបែបនេះនឹងមិនចូល photo handler ក៏មិនចូល handle_msg
+#  (ដែល default content_types=['text'] តែប៉ុណ្ណោះ ព្រោះមិនបានបញ្ជាក់
+#  content_types ច្បាស់លាស់) ធ្វើឲ្យ Bot ស្ងាត់ស្ងៀមទាំងស្រុងគ្មាន reply
+#  ═══════════════════════════════════════════════════════════
+@bot.message_handler(content_types=["sticker"])
+def handle_sticker(message):
+    uid = message.chat.id
+    step = waiting.get(uid)
+    if uid != ADMIN_ID:
+        return
+    if isinstance(step, dict) and step.get("step") == "await_setemoji_single":
+        ch = step["char"]
+        found = _extract_custom_emoji(message)
+        if not found:
+            bot.send_message(uid,
+                f"❌ រកមិនឃើញ premium emoji ក្នុងសារនោះទេ។ ផ្ញើ Premium version របស់ {ch} ម្តងទៀត ឬ ✕ Cancel។",
+                parse_mode="HTML", reply_markup=cancel_kb())
+            return
+        exact = [eid for c, eid in found if _norm_vs(c) == _norm_vs(ch)]
+        if not exact:
+            detected = ", ".join(f"{c}" for c, _ in found)
+            bot.send_message(uid,
+                f"⚠️ <b>Emoji មិនត្រូវគ្នា!</b>\n"
+                f"កំពុងកំណត់: {ch}\n"
+                f"ប៉ុន្តែសារនេះមាន: {detected}\n\n"
+                f"សូមប្រាកដថា premium emoji ដែលអ្នកផ្ញើ គឺជា <b>version premium របស់ {ch}</b> ពិតប្រាកដ "
+                f"(តាមធម្មតា ត្រូវជ្រើសរើសពី emoji picker ដោយវាយ {ch} រួចចុច premium skin — "
+                f"កុំចម្លង/forward emoji ផ្សេង)។ ផ្ញើម្តងទៀត ឬ ✕ Cancel។",
+                parse_mode="HTML", reply_markup=cancel_kb())
+            return
+        match_eid = exact[0]
+        EMOJI_MAP[ch] = match_eid
+        _save(EMOJI_FILE, EMOJI_MAP)
+        waiting.pop(uid, None)
+        remaining = [c for c, v in EMOJI_MAP.items() if not v]
+        done_n = sum(1 for v in EMOJI_MAP.values() if v)
+        if remaining:
+            bot.send_message(uid,
+                f"✅ {ch} → <code>{match_eid}</code> កំណត់ជោគជ័យ!\n"
+                f"📊 {done_n}/{len(EMOJI_MAP)} — នៅសល់ {len(remaining)}\n\n"
+                f"👇 ជ្រើស emoji បន្ត:",
+                parse_mode="HTML", reply_markup=missing_emoji_kb())
+        else:
+            bot.send_message(uid,
+                f"✅ {ch} → <code>{match_eid}</code> កំណត់ជោគជ័យ!\n\n"
+                f"🎉 <b>រួចរាល់! Emoji ទាំងអស់បានកំណត់ 100%!</b>",
+                parse_mode="HTML", reply_markup=admin_kb())
+        return
+    if step == "await_setemojis":
+        report = _apply_setemojis(message)
+        remaining = sum(1 for v in EMOJI_MAP.values() if not v)
+        if not report:
+            bot.send_message(uid,
+                "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។ ផ្ញើសារផ្សេងទៀត ឬ ✕ Cancel។",
+                parse_mode="HTML", reply_markup=cancel_kb())
+            return
+        if remaining == 0:
+            waiting.pop(uid, None)
+            bot.send_message(uid,
+                report + "\n\n🎉 <b>រួចរាល់! Emoji ទាំងអស់បានកំណត់ 100%!</b>",
+                parse_mode="HTML", reply_markup=admin_kb())
+        else:
+            missing_preview = " ".join(ch for ch, v in EMOJI_MAP.items() if not v)[:200]
+            bot.send_message(uid,
+                report + f"\n\n📤 ផ្ញើសារបន្តទៀត ({remaining} នៅសល់) ឬ ✕ Cancel ពេលរួច:\n⬜ {missing_preview}",
+                parse_mode="HTML", reply_markup=cancel_kb())
+        return
+    if step == "await_emojiid":
+        report = _emojiid_text(message)
+        if report:
+            bot.send_message(uid, report + "\n\n📤 ផ្ញើសារបន្តទៀត ឬ ✕ Cancel ពេលរួច:",
+                parse_mode="HTML", reply_markup=cancel_kb())
+        else:
+            bot.send_message(uid,
+                "❌ រកមិនឃើញ premium/custom emoji ក្នុងសារនោះទេ។ ផ្ញើសារផ្សេងទៀត ឬ ✕ Cancel។",
+                parse_mode="HTML", reply_markup=cancel_kb())
+        return
 
 # ═══════════════════════════════════════════════════════════
 #  MAIN MESSAGE HANDLER
