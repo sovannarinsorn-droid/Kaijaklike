@@ -1703,6 +1703,7 @@ def emoji_menu_kb():
     """Inline menu for Premium Emoji settings (replaces /setemojis, /emojilist, /emojiid)."""
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("✏️ កំណត់ Emoji ថ្មី", callback_data="emojimenu:set", color="progress"))
+    kb.add(InlineKeyboardButton("🔄 ប្តូរ Emoji ដែលមានស្រាប់", callback_data="emojimenu:change", color="progress"))
     kb.add(InlineKeyboardButton("📊 មើលស្ថានភាព",     callback_data="emojimenu:list", color="active"))
     kb.add(InlineKeyboardButton("🆔 យក Emoji ID",       callback_data="emojimenu:id", color="active"))
     return kb
@@ -1721,6 +1722,22 @@ def missing_emoji_kb(per_row=6):
             btns.append(row); row = []
     if row: btns.append(row)
     btns.append([InlineKeyboardButton("📋 ផ្ញើច្រើនម្តង (Advanced)", callback_data="emojimenu:setmulti", color="active")])
+    btns.append([InlineKeyboardButton("🔙 ត្រឡប់ Menu", callback_data="emojimenu:menu", color="inactive")])
+    return InlineKeyboardMarkup(btns)
+
+def all_emoji_kb(per_row=6):
+    """Inline keyboard grid — ALL emoji (both set និង unset), ដើម្បីឲ្យ Admin អាចជ្រើស
+    Emoji ដែលកំណត់រួចហើយ មកកំណត់ (ប្តូរ) ម្តងទៀត។ ✅ = មានស្រាប់, ⬜ = មិនទាន់កំណត់។
+    ប្រើ callback_data ដដែលនឹង emojipick: (Handler ដដែលមិនប្រកែកថា Set រួចហើយឬអត់)។"""
+    btns = []
+    row = []
+    for ch, v in EMOJI_MAP.items():
+        mark = "✅" if v else "⬜"
+        row.append(InlineKeyboardButton(f"{mark}{ch}", callback_data=f"emojipick:{ch}",
+                                         color=("active" if v else "progress")))
+        if len(row) == per_row:
+            btns.append(row); row = []
+    if row: btns.append(row)
     btns.append([InlineKeyboardButton("🔙 ត្រឡប់ Menu", callback_data="emojimenu:menu", color="inactive")])
     return InlineKeyboardMarkup(btns)
 
@@ -3016,6 +3033,16 @@ def cb_emojimenu(call):
             "<i>bot នឹងចាប់យក custom_emoji_id ដោយស្វ័យប្រវត្តិ — មិនចាំបាច់ដឹង ID ដោយខ្លួនឯងទេ</i>\n\n"
             f"📊 កំណត់រួច: {sum(1 for v in EMOJI_MAP.values() if v)}/{len(EMOJI_MAP)} — នៅសល់ {len(missing)}",
             parse_mode="HTML", reply_markup=missing_emoji_kb())
+    elif action == "change":
+        waiting.pop(uid, None)   # ជម្រះ state ចាស់ ពេលបើក grid ថ្មី
+        done_n = sum(1 for v in EMOJI_MAP.values() if v)
+        bot.send_message(uid,
+            "🔄 <b>ប្តូរ Premium Emoji ដែលមានស្រាប់</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "👇 ចុចលើ Emoji ណាមួយខាងក្រោម (✅ = មានស្រាប់, ⬜ = មិនទាន់កំណត់)\n"
+            "រួចផ្ញើ ឬ Forward Premium version ថ្មី — Bot នឹងជំនួស ID ចាស់ភ្លាមៗ\n\n"
+            f"📊 កំណត់រួច: {done_n}/{len(EMOJI_MAP)}",
+            parse_mode="HTML", reply_markup=all_emoji_kb())
     elif action == "menu":
         waiting.pop(uid, None)   # ជម្រះ state ចាស់ (ដូចជា await_setemoji_single) បើនៅសល់
         done_n = sum(1 for v in EMOJI_MAP.values() if v)
