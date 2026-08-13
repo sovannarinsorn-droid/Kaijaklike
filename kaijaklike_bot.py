@@ -310,6 +310,9 @@ smm_api      = _load(SMM_API_FILE,   {"url": "", "key": ""})
 smm_services = _load(SMM_SVC_FILE,   {})
 smm_orders   = _load(SMM_ORD_FILE,   {})
 smm_profit   = _load(SMM_PROFIT_FILE,{"pct": 20})
+DAILY_REPORT_FILE = _dpath("daily_report_cfg.json")
+daily_report_cfg  = _load(DAILY_REPORT_FILE, {"enabled": True, "hour": 8})
+_KH_TZ = datetime.timezone(datetime.timedelta(hours=7))
 smm_poll     = _load(SMM_POLL_FILE,  {"interval": POLL_INTERVAL})
 smm_deps     = _load(SMM_DEP_FILE,   {})
 
@@ -1019,6 +1022,92 @@ def cmd_profit(message):
     if message.from_user.id != ADMIN_ID:
         return
     bot.reply_to(message, _profit_report_text(), parse_mode="HTML")
+
+def _top_report_text(period_days=30, top_n=5):
+    """សាងសង់របាយការណ៍ Top Services (លក់ដាច់បំផុត) និង Top Clients (ចំណាយច្រើន
+    បំផុត) ក្នុងចន្លោះ period_days ថ្ងៃចុងក្រោយ។ លើកលែង Order rejected/canceled
+    ដូចគ្នានឹង Profit Report ដែរ។"""
+    cutoff = int(time.time()) - period_days * 86400 if period_days else 0
+    svc_stats, client_stats = {}, {}
+    for o in smm_orders.values():
+        if o.get("status") in ("rejected", "canceled"):
+            continue
+        if o.get("ts", 0) < cutoff:
+            continue
+        price = float(o.get("price", 0) or 0)
+        slug  = o.get("slug", "")
+        label = o.get("label", slug)
+        cs = svc_stats.setdefault(slug, [0, 0.0, label])
+        cs[0] += 1; cs[1] += price
+        uid = o.get("uid", "")
+        cu = client_stats.setdefault(uid, [0, 0.0])
+        cu[0] += 1; cu[1] += price
+    top_svcs    = sorted(svc_stats.items(),    key=lambda kv: kv[1][1], reverse=True)[:top_n]
+    top_clients = sorted(client_stats.items(), key=lambda kv: kv[1][1], reverse=True)[:top_n]
+
+    lines = [f"🏆 <b>Top {top_n} — {period_days} ថ្ងៃចុងក្រោយ</b>", "━━━━━━━━━━━━━━━━━━"]
+    lines.append("\n📦 <b>Services លក់ដាច់បំផុត:</b>")
+    if top_svcs:
+        medal = ["🥇", "🥈", "🥉"]
+        for i, (slug, (cnt, rev, label)) in enumerate(top_svcs):
+            m = medal[i] if i < 3 else f"{i+1}."
+            lines.append(f"  {m} {label} — {cnt} orders · ${rev:.2f}")
+    else:
+        lines.append("  <i>គ្មានទិន្នន័យ</i>")
+
+    lines.append("\n👤 <b>Client ចំណាយច្រើនបំផុត:</b>")
+    if top_clients:
+        medal = ["🥇", "🥈", "🥉"]
+        for i, (uid, (cnt, rev)) in enumerate(top_clients):
+            u = users_db.get(str(uid), {})
+            name = u.get("name") or u.get("username") or "?"
+            m = medal[i] if i < 3 else f"{i+1}."
+            lines.append(f"  {m} {name} (<code>{uid}</code>) — {cnt} orders · ${rev:.2f}")
+    else:
+        lines.append("  <i>គ្មានទិន្នន័យ</i>")
+    lines.append("\n<i>* លុប Order rejected/canceled ចេញ</i>")
+    return "\n".join(lines)
+
+@bot.message_handler(commands=["dailyreport"])
+def cmd_dailyreport(message):
+    """/dailyreport on|off|<hour 0-23> — គ្រប់គ្រង Auto Daily Report"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        state = "🟢 បើក" if daily_report_cfg.get("enabled", True) else "🔴 បិទ"
+        bot.reply_to(message,
+            f"⏰ <b>Daily Report Auto-Send</b>\n"
+            f"ស្ថានភាព: {state}\n"
+            f"ម៉ោងផ្ញើ: {daily_report_cfg.get('hour', 8):02d}:00 (ម៉ោងកម្ពុជា)\n\n"
+            f"ប្រើ: <code>/dailyreport on</code> ឬ <code>off</code> ឬ <code>/dailyreport 9</code> (ប្តូរម៉ោង)",
+            parse_mode="HTML")
+        return
+    arg = parts[1].lower()
+    if arg == "on":
+        daily_report_cfg["enabled"] = True
+        _save(DAILY_REPORT_FILE, daily_report_cfg)
+        bot.reply_to(message, "✅ បើក Daily Report ស្វ័យប្រវត្តិហើយ។")
+    elif arg == "off":
+        daily_report_cfg["enabled"] = False
+        _save(DAILY_REPORT_FILE, daily_report_cfg)
+        bot.reply_to(message, "🔴 បិទ Daily Report ស្វ័យប្រវត្តិហើយ។")
+    elif arg.isdigit() and 0 <= int(arg) <= 23:
+        daily_report_cfg["hour"] = int(arg)
+        _save(DAILY_REPORT_FILE, daily_report_cfg)
+        bot.reply_to(message, f"⏰ កំណត់ម៉ោងផ្ញើ Daily Report ទៅ {int(arg):02d}:00 (ម៉ោងកម្ពុជា) ជោគជ័យ។")
+    else:
+        bot.reply_to(message, "❌ ប្រើ: /dailyreport on | off | <ម៉ោង 0-23>")
+
+
+def cmd_top(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    days = 30
+    if len(parts) > 1 and parts[1].isdigit():
+        days = int(parts[1])
+    bot.reply_to(message, _top_report_text(days), parse_mode="HTML")
 
 
     url = smm_api.get("url", "")
@@ -1742,7 +1831,8 @@ def admin_kb():
            KeyboardButton("💰 កែតម្លៃ",       color="progress"))
     kb.row(KeyboardButton("💹 ប្រាក់ចំណេញ SMM", color="active"),
            KeyboardButton("📋 SMM Services",    color="active"))
-    kb.row(KeyboardButton("📈 របាយការណ៍ចំណេញ", color="active"))
+    kb.row(KeyboardButton("📈 របាយការណ៍ចំណេញ", color="active"),
+           KeyboardButton("🏆 Top Services/Clients", color="active"))
     kb.row("━━━ 💰 ហិរញ្ញវត្ថុ ━━━")
     kb.row(KeyboardButton("💰 កាបូបលុយ",   color="active"),
            KeyboardButton("💳 ប្រាក់បញ្ញើ", color="active"))
@@ -1935,7 +2025,9 @@ def smm_qty_kb(slug, s):
             if len(qtys) >= 6: break
     btns = []
     for q in qtys:
-        price = sr * q / 1000
+        price = _round_price_01(sr * q / 1000)  # ត្រូវតែដូចគ្នានឹងតម្លៃពិត _smm_price_for_order()
+                                                  # ដែលនឹងគិតលុយ ដើម្បីកុំឲ្យតម្លៃលើប៊ូតុងខុសពី
+                                                  # តម្លៃពិតដែលគិតលុយពេលបញ្ជាទិញ (bug ចាស់)
         btns.append([InlineKeyboardButton(
             f"{q:,} {first} — ${price:.2f}", callback_data=f"smmqty:{slug}:{q}", color="active")])
     btns.append([InlineKeyboardButton("🔙 Back", callback_data="back:smmcats", color="inactive")])
@@ -4236,6 +4328,9 @@ def handle_msg(message):
         if text == "📈 របាយការណ៍ចំណេញ":
             bot.send_message(uid, _profit_report_text(), parse_mode="HTML", reply_markup=admin_kb()); return
 
+        if text == "🏆 Top Services/Clients":
+            bot.send_message(uid, _top_report_text(), parse_mode="HTML", reply_markup=admin_kb()); return
+
         if text == "🎁 Bonus ដាក់លុយ":
             btns = InlineKeyboardMarkup()
             toggle_label = "🔴 បិទ Auto Bonus" if dep_bonus_cfg.get("enabled", True) else "🟢 បើក Auto Bonus"
@@ -5090,6 +5185,35 @@ def _bot_polling_with_retry():
             time.sleep(10)
 
 # ═══════════════════════════════════════════════════════════
+#  DAILY AUTO-REPORT — ផ្ញើ Profit + Top report ដល់ Admin ស្វ័យប្រវត្តិ
+#  រៀងរាល់ថ្ងៃម្តង តាមម៉ោងកំណត់ (default 08:00 ម៉ោងកម្ពុជា UTC+7)
+# ═══════════════════════════════════════════════════════════
+def _daily_report_scheduler():
+    """រត់ជា background thread — ពិនិត្យរាល់នាទី ថាដល់ម៉ោងផ្ញើ report ថ្ងៃនេះ
+    ឬនៅ។ ប្រើ _dpath persistence ដើម្បីកុំឲ្យផ្ញើ 2 ដងក្នុងថ្ងៃតែមួយ ទោះបី bot
+    restart ក៏ដោយ (ចងចាំ 'last_sent_date')។"""
+    while True:
+        try:
+            time.sleep(60)
+            if not daily_report_cfg.get("enabled", True):
+                continue
+            now_kh = datetime.datetime.now(_KH_TZ)
+            today  = now_kh.strftime("%Y-%m-%d")
+            if now_kh.hour != int(daily_report_cfg.get("hour", 8)):
+                continue
+            if daily_report_cfg.get("last_sent_date") == today:
+                continue
+            daily_report_cfg["last_sent_date"] = today
+            _save(DAILY_REPORT_FILE, daily_report_cfg)
+            txt = (f"⏰ <b>របាយការណ៍ប្រចាំថ្ងៃ</b> — {today}\n"
+                   f"━━━━━━━━━━━━━━━━━━\n\n" + _profit_report_text() +
+                   "\n\n" + _top_report_text(7))
+            bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
+            logger.info(f"📤 Daily report sent for {today}")
+        except Exception as e:
+            logger.warning(f"⚠️ Daily report scheduler error: {e}")
+
+# ═══════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -5100,6 +5224,7 @@ if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=_self_ping, daemon=True).start()
     threading.Thread(target=_smm_order_watcher, daemon=True).start()
+    threading.Thread(target=_daily_report_scheduler, daemon=True).start()
     if IS_MASTER:
         for _cln_name, _cln_cfg in clone_registry.items():
             try:
