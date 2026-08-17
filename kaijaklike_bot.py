@@ -12,6 +12,7 @@
 """
 
 import json, logging, time, re, threading, io, os, sys, subprocess, datetime
+import zipfile
 from decimal import Decimal as _Decimal, ROUND_HALF_UP as _ROUND_HALF_UP
 import requests as http_req
 from dotenv import load_dotenv
@@ -432,7 +433,30 @@ lang_cooldown= {}
 # ═══════════════════════════════════════════════════════════
 #  BOT + HTTP
 # ═══════════════════════════════════════════════════════════
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+# ── Global exception handler — ការពារ "ស្ងាត់ស្ងៀម" ──────────────────────
+# បើ handler ណាមួយ (message/callback) throw exception ណាមួយដែលមិនត្រូវបាន
+# catch ដោយ try/except ក្នុង handler ខ្លួនឯង, pyTelegramBotAPI លំនាំដើម
+# គ្រាន់តែ log ទៅ console ប៉ុណ្ណោះ ដោយគ្មានឆ្លើយតបអ្វីមក User ទាល់តែសោះ —
+# នេះជាមូលហេតុចម្បងបំផុតដែល "ចុចប៊ូតុងហើយគ្មានអ្វីកើតឡើង" ។ Handler
+# ខាងក្រោមចាប់ error ទាំងអស់ដែលរួចផុតពី try/except ក្នុងស្រុក ហើយ (1) log
+# stack trace ពេញលេញ (2) ជូនដំណឹង Admin ជាសារខ្លីៗ ដើម្បីកុំឲ្យ bug
+# ត្រូវលាក់កំបាំងទៀតតទៅ។
+class _GlobalExceptionHandler(telebot.ExceptionHandler):
+    def handle(self, exception):
+        import traceback as _tb
+        trace = _tb.format_exc()
+        logger.error(f"❌ Unhandled exception ក្នុង bot handler:\n{trace}")
+        try:
+            bot.send_message(ADMIN_ID,
+                f"⚠️ <b>Bot Error (internal, User មិនឃើញ)</b>\n"
+                f"<code>{str(exception)[:500]}</code>\n\n"
+                f"<i>មើល log ពេញលេញនៅ Render console</i>",
+                parse_mode="HTML")
+        except Exception:
+            pass  # កុំឲ្យ error-in-error-handler បង្កជាបញ្ហាបន្ថែម
+        return True  # true = បន្តដំណើរការ polling loop (មិនបញ្ឈប់ bot)
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None, exception_handler=_GlobalExceptionHandler())
 
 _BOT_USERNAME_CACHE = {"v": None}
 def _bot_username():
@@ -493,6 +517,24 @@ _EMOJI_ERROR_HINTS = ("EMOJI", "ICON", "PREMIUM", "STICKER")
 def _looks_emoji_related(exc):
     return any(h in str(exc).upper() for h in _EMOJI_ERROR_HINTS)
 
+def _markup_has_emoji_icon(markup):
+    """ត្រឡប់ True បើ keyboard/markup មាន button ណាមួយកំណត់ icon_custom_emoji_id
+    (_emoji_id)។ ប្រើដើម្បីសម្រេចថាតើគួរ fallback-retry ដែរឬទេ សូម្បីតែ error
+    message មិនបាននិយាយពាក្យទាក់ទង emoji ដោយផ្ទាល់ក៏ដោយ (Telegram ពេលខ្លះ
+    បដិសេធ request ទាំងមូលដោយសារ field នេះ ដោយគ្មានប្រាប់ច្បាស់ក្នុង error
+    text — ករណីនេះហើយដែលបណ្តាលឲ្យ buttonខ្លះ "ស្ងាត់" ជានិច្ចមុនកែ)។"""
+    try:
+        rows = getattr(markup, "keyboard", None)
+        if not rows:
+            return False
+        for row in rows:
+            for btn in row:
+                if getattr(btn, "_emoji_id", None):
+                    return True
+    except Exception:
+        pass
+    return False
+
 def _wrap_safe_call(fn, text_kw=None, text_pos=None):
     """រុំ bot method មួយ ដើម្បី (1) ដាក់ tg-emoji ចូល text ស្វ័យប្រវត្តិ បើ
     parse_mode=HTML និង (2) ធានាថា បើ Telegram បដិសេធដោយសារ emoji/icon,
@@ -515,19 +557,35 @@ def _wrap_safe_call(fn, text_kw=None, text_pos=None):
                     args[text_pos] = new_text
                     emojified = True
 
+        markup = kwargs.get("reply_markup")
+        has_icon_markup = _markup_has_emoji_icon(markup)
+
         try:
             return fn(*args, **kwargs)
         except Exception as e:
-            if not _looks_emoji_related(e):
+            # ⚠️ កំណត់ត្រា (កែ 2026-08-13): មុននេះ retry កើតឡើងលុះត្រាតែ error
+            # message *contain* ពាក្យ EMOJI/ICON/PREMIUM/STICKER ច្បាស់ៗ។ ប៉ុន្តែ
+            # Telegram ជួនកាលបដិសេធ request ទាំងមូល ដោយសារ icon_custom_emoji_id
+            # មិនត្រឹមត្រូវ ដោយគ្មានប្រាប់ពាក្យទាំងនោះក្នុង error text ផ្ទាល់ —
+            # ធ្វើឲ្យ retry-check ចាស់ខកខាន, exception ត្រូវ raise ចោល, telebot
+            # គ្រាន់តែ log ទៅ console ដោយគ្មានឆ្លើយតបអ្វីមកអ្នកប្រើទាល់តែសោះ
+            # (button "ស្ងាត់" ជានិច្ច)។ ឥឡូវ retry ក៏កើតឡើងបើ markup មាន
+            # icon_custom_emoji_id ណាមួយផងដែរ ទោះ error text មិននិយាយពី emoji
+            # ដោយផ្ទាល់ក៏ដោយ។
+            if not _looks_emoji_related(e) and not (emojified or has_icon_markup):
                 raise
-            logger.warning(f"⚠️ Premium emoji ត្រូវបានបដិសេធដោយ Telegram — fallback ទៅ unicode ធម្មតា: {e}")
+            logger.warning(f"⚠️ Premium emoji/icon ត្រូវបានបដិសេធដោយ Telegram — fallback ទៅ unicode ធម្មតា: {e}")
             if emojified:
                 if text_kw is not None and text_kw in kwargs:
                     kwargs[text_kw] = orig_text
                 elif text_pos is not None:
                     args[text_pos] = orig_text
-            _strip_markup_icons(kwargs.get("reply_markup"))
-            return fn(*args, **kwargs)
+            _strip_markup_icons(markup)
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e2:
+                logger.error(f"❌ Fallback (គ្មាន icon) ក៏បរាជ័យដែរ — សារនេះនឹងមិនផ្ញើចេញ: {e2}")
+                raise
     return wrapper
 
 bot.send_message        = _wrap_safe_call(bot.send_message,        "text", 1)
@@ -1153,6 +1211,100 @@ def cmd_top(message):
     if len(parts) > 1 and parts[1].isdigit():
         days = int(parts[1])
     bot.reply_to(message, _top_report_text(days), parse_mode="HTML")
+
+# ═══════════════════════════════════════════════════════════
+#  BACKUP / RESTORE DATA — សម្រាប់ផ្ទេរទៅ Server ថ្មី ដោយមិនបាត់ data
+#  (users, wallets, orders, services, emoji, config ។ល។ — គ្រប់ file
+#  JSON ក្នុង DATA_DIR)
+# ═══════════════════════════════════════════════════════════
+@bot.message_handler(commands=["backup"])
+def cmd_backup(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    bot.send_chat_action(ADMIN_ID, "upload_document")
+    try:
+        files = [f for f in os.listdir(DATA_DIR) if f.endswith(".json")]
+        if not files:
+            bot.reply_to(message, "❌ រកមិនឃើញ file .json ណាមួយក្នុង DATA_DIR ទេ។")
+            return
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in files:
+                zf.write(os.path.join(DATA_DIR, f), arcname=f)
+        buf.seek(0)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        buf.name = f"kaijaklike_backup_{ts}.zip"
+        bot.send_document(ADMIN_ID, buf,
+            caption=f"💾 <b>Backup ទិន្នន័យ</b> — {len(files)} files\n"
+                    f"🗓️ {ts}\n\n"
+                    f"👉 រក្សាទុក file នេះឲ្យបានល្អ។ ដើម្បីយកទៅប្រើលើ Server ថ្មី "
+                    f"ផ្ញើ file នេះមកវិញ ព្រម <code>/restore</code>",
+            parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"[backup] {e}")
+        bot.reply_to(message, f"❌ Backup បរាជ័យ: {e}")
+
+@bot.message_handler(commands=["restore"])
+def cmd_restore(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    waiting[ADMIN_ID] = "await_restore_zip"
+    bot.reply_to(message,
+        "📥 <b>Restore ទិន្នន័យ</b>\n"
+        "សូម Forward ឬផ្ញើ file <code>.zip</code> backup មកទីនេះ (ចេញពី /backup)។\n\n"
+        "⚠️ <b>ប្រុងប្រយ័ត្ន:</b> នេះនឹង <u>សរសេរជាន់ពី</u> data បច្ចុប្បន្នទាំងអស់ "
+        "(users, wallets, orders...) ។ ធ្វើ /backup ទុកជាមុនសិន បើអ្នកមិនប្រាកដ។",
+        parse_mode="HTML", reply_markup=cancel_kb())
+
+@bot.message_handler(content_types=["document"])
+def handle_document(message):
+    uid = message.chat.id
+    if uid != ADMIN_ID:
+        return
+    step = waiting.get(uid)
+    if step != "await_restore_zip":
+        return
+    doc = message.document
+    if not (doc.file_name or "").lower().endswith(".zip"):
+        bot.send_message(uid, "❌ ត្រូវជា file .zip ប៉ុណ្ណោះ។ ផ្ញើម្តងទៀត ឬ ✕ Cancel។",
+                          reply_markup=cancel_kb())
+        return
+    try:
+        file_info = bot.get_file(doc.file_id)
+        raw = bot.download_file(file_info.file_path)
+        buf = io.BytesIO(raw)
+        with zipfile.ZipFile(buf, "r") as zf:
+            names = [n for n in zf.namelist() if n.endswith(".json") and "/" not in n and ".." not in n]
+            if not names:
+                bot.send_message(uid, "❌ រកមិនឃើញ file .json ក្នុង zip នេះទេ។ ផ្ញើម្តងទៀត ឬ ✕ Cancel។",
+                                  reply_markup=cancel_kb())
+                return
+            # ចម្លងទុកមុនសិន (safety backup) មុននឹងសរសេរជាន់
+            safety_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            safety_dir = _dpath(f"_pre_restore_backup_{safety_ts}")
+            os.makedirs(safety_dir, exist_ok=True)
+            for f in os.listdir(DATA_DIR):
+                if f.endswith(".json"):
+                    try:
+                        import shutil as _shutil
+                        _shutil.copy(os.path.join(DATA_DIR, f), os.path.join(safety_dir, f))
+                    except Exception: pass
+            for n in names:
+                zf.extract(n, DATA_DIR)
+        waiting.pop(uid, None)
+        bot.send_message(uid,
+            f"✅ <b>Restore ជោគជ័យ!</b> ({len(names)} files)\n"
+            f"🛡️ Data ចាស់បានចម្លងទុកនៅ <code>{os.path.basename(safety_dir)}</code> ជាមុនសិន (ការពារបញ្ហា)\n\n"
+            f"⚠️ <b>ត្រូវ Restart Bot ដើម្បីអោយ Data ថ្មីដំណើរការ</b> "
+            f"(data ដែល load ចូល RAM រួចហើយ មិនប្តូរដោយស្វ័យប្រវត្តិទេ)។\n"
+            f"👉 ចូល Render Dashboard → Manual Restart, ឬប្រើ <code>/restart</code> endpoint។",
+            parse_mode="HTML", reply_markup=admin_kb())
+    except zipfile.BadZipFile:
+        bot.send_message(uid, "❌ File នេះមិនមែនជា zip ត្រឹមត្រូវទេ។ ផ្ញើម្តងទៀត ឬ ✕ Cancel។",
+                          reply_markup=cancel_kb())
+    except Exception as e:
+        logger.error(f"[restore] {e}")
+        bot.send_message(uid, f"❌ Restore បរាជ័យ: {e}", reply_markup=admin_kb())
 
 
     url = smm_api.get("url", "")
@@ -1879,6 +2031,7 @@ def admin_kb():
     kb.row(KeyboardButton("📈 របាយការណ៍ចំណេញ", color="active"),
            KeyboardButton("🏆 Top Services/Clients", color="active"))
     kb.row(KeyboardButton("⏰ Daily Report Auto", color="active"))
+    kb.row(KeyboardButton("💾 Backup Data", color="active"))
     kb.row("━━━ 💰 ហិរញ្ញវត្ថុ ━━━")
     kb.row(KeyboardButton("💰 កាបូបលុយ",   color="active"),
            KeyboardButton("💳 ប្រាក់បញ្ញើ", color="active"))
@@ -2333,6 +2486,63 @@ def cmd_start(message):
 
 WELCOME_SETTINGS_FILE = _dpath("smm_welcome.json")
 welcome_cfg = _load(WELCOME_SETTINGS_FILE, {"photo_id": ""})
+
+# ═══════════════════════════════════════════════════════════
+#  FORCE-SUBSCRIBE (ការពារ User ក្លែងក្លាយ) — តម្រូវឲ្យ User ចូល Channel
+#  មុននឹងប្រើប្រាស់ Bot បាន។ Admin/Sub-admin មិនប៉ះពាល់ទេ។
+# ═══════════════════════════════════════════════════════════
+FORCE_SUB_FILE = _dpath("force_sub.json")
+force_sub_cfg  = _load(FORCE_SUB_FILE, {"enabled": False, "channel_id": "", "channel_link": ""})
+
+def _is_channel_member(uid):
+    """ត្រឡប់ True បើ User ជាសមាជិក Channel ដែលកំណត់ (ឬបើ Force-sub មិនបានបើក
+    ឬ channel_id មិនទាន់កំណត់)។ ប្រសិនបើហៅ Telegram API មិនកើត (ឧ. Bot មិន
+    មែនជា admin របស់ channel នោះ, ឬ channel_id ខុស) — fail-open (ត្រឡប់ True)
+    ដើម្បីកុំឲ្យ User ទាំងអស់ ជាប់គាំងទាំងស្រុងដោយសារកំហុស config តែមួយ។"""
+    if not force_sub_cfg.get("enabled"):
+        return True
+    ch = force_sub_cfg.get("channel_id", "")
+    if not ch:
+        return True
+    try:
+        m = bot.get_chat_member(ch, uid)
+        return m.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.warning(f"⚠️ Force-sub check failed (fail-open): {e}")
+        return True
+
+def _force_sub_kb():
+    kb = InlineKeyboardMarkup()
+    link = force_sub_cfg.get("channel_link", "")
+    if link:
+        kb.add(InlineKeyboardButton("📢 ចូល Channel", url=link, color="active"))
+    kb.add(InlineKeyboardButton("✅ ខ្ញុំចូលរួចហើយ", callback_data="fsub:check", color="success"))
+    return kb
+
+def _force_sub_gate_text():
+    return ("🔒 <b>សូមចូល Channel មុននឹងប្រើប្រាស់ Bot!</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "ដើម្បីការពារ User ក្លែងក្លាយ និងទទួលព័ត៌មានថ្មីៗ សូម Join Channel ខាងក្រោម "
+            "រួចចុច ✅ ខ្ញុំចូលរួចហើយ")
+
+@bot.callback_query_handler(func=lambda c: c.data == "fsub:check")
+def cb_fsub_check(call):
+    uid = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    if _is_channel_member(uid):
+        try:
+            bot.edit_message_text("✅ <b>អ្នកបានចូល Channel រួចហើយ!</b> កំពុងបើក Bot...",
+                chat_id=uid, message_id=call.message.message_id, parse_mode="HTML")
+        except Exception as _e:
+            logger.debug(f"[silent] {_e}")
+        if str(uid) not in user_lang:
+            bot.send_message(uid,
+                "សួស្តី! 👋 ជ្រើសភាសាដែលអ្នកចូលចិត្តសិន\n<i>Hi! Pick your language first 😊</i>",
+                parse_mode="HTML", reply_markup=lang_select_kb())
+        else:
+            _show_welcome(uid)
+    else:
+        bot.answer_callback_query(call.id, "❌ អ្នកមិនទាន់ចូល Channel ទេ! សូម Join រួចចុចម្តងទៀត។", show_alert=True)
 
 def _save_welcome_photo(file_id):
     welcome_cfg["photo_id"] = file_id
@@ -4397,6 +4607,9 @@ def handle_msg(message):
                 f"Bot នឹងផ្ញើ 📈 ចំណេញ + 🏆 Top Services/Clients មកអ្នកដោយស្វ័យប្រវត្តិរាល់ថ្ងៃ។",
                 parse_mode="HTML", reply_markup=daily_report_kb())
             return
+
+        if text == "💾 Backup Data":
+            cmd_backup(message); return
 
         if text == "🎁 Bonus ដាក់លុយ":
             btns = InlineKeyboardMarkup()
