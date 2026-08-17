@@ -1295,10 +1295,17 @@ def handle_document(message):
         bot.send_message(uid,
             f"✅ <b>Restore ជោគជ័យ!</b> ({len(names)} files)\n"
             f"🛡️ Data ចាស់បានចម្លងទុកនៅ <code>{os.path.basename(safety_dir)}</code> ជាមុនសិន (ការពារបញ្ហា)\n\n"
-            f"⚠️ <b>ត្រូវ Restart Bot ដើម្បីអោយ Data ថ្មីដំណើរការ</b> "
-            f"(data ដែល load ចូល RAM រួចហើយ មិនប្តូរដោយស្វ័យប្រវត្តិទេ)។\n"
-            f"👉 ចូល Render Dashboard → Manual Restart, ឬប្រើ <code>/restart</code> endpoint។",
-            parse_mode="HTML", reply_markup=admin_kb())
+            f"🔄 <b>កំពុង Restart Bot ស្វ័យប្រវត្តិ...</b> (ត្រូវការ ដើម្បីអោយ Data ថ្មីចូល RAM — "
+            f"គ្រាន់តែសរសេរជាន់ file មិនគ្រប់គ្រាន់ទេ)។ រង់ចាំ ~5 វិនាទី រួចសាកល្បង /start វិញ។",
+            parse_mode="HTML")
+        def _auto_restart():
+            time.sleep(1.5)
+            try: bot.stop_polling()
+            except Exception: pass
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        threading.Thread(target=_auto_restart, daemon=True).start()
+        return
     except zipfile.BadZipFile:
         bot.send_message(uid, "❌ File នេះមិនមែនជា zip ត្រឹមត្រូវទេ។ ផ្ញើម្តងទៀត ឬ ✕ Cancel។",
                           reply_markup=cancel_kb())
